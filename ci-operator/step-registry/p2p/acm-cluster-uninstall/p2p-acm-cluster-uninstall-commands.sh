@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-cp -L $KUBECONFIG /tmp/kubeconfig
+# cp -L $KUBECONFIG /tmp/kubeconfig
 
-export KUBECONFIG=/tmp/kubeconfig
+export KUBECONFIG=${SHARED_DIR}/kubeconfig
 
 #=====================
 # if no spoke clusters in acm then exit
@@ -14,24 +14,21 @@ if [[ ${#ALL_SPOKES[@]} -eq 0 ]]; then
   exit 0
 fi
 
-[[ -f "${SHARED_DIR}/managed.cluster.name" ]] || { echo "Spoke cluster name not found in file :${SHARED_DIR}/managed.cluster.name" >&2;}
+[[ -f "${SHARED_DIR}/managed.cluster.name" ]] || { echo "Spoke cluster name not found in file :${SHARED_DIR}/managed.cluster.name" >&2; exit 0;}
 
 CLUSTER_NAME="$(cat "${SHARED_DIR}/managed.cluster.name")"
 
-echo "$CLUSTER_NAME"
-
-
 #======optional
-NAMESPACE="${CLUSTER_NAME}"
-TIMEOUT_MINUTES="${TIMEOUT:-40}"
-POLL_SECONDS="${POLL_SECONDS:-15}"
-LOG_SINCE="${LOG_SINCE:-30s}"
-DELETE_NAMESPACE="${DELETE_NAMESPACE:-true}"
-FORCE_DELETE_MC="${FORCE_DELETE_MC:-false}"
+NAMESPACE=${CLUSTER_NAME}
+TIMEOUT_MINUTES=${TIMEOUT:-40}
+POLL_SECONDS=${POLL_SECONDS:-15}
+LOG_SINCE=${LOG_SINCE:-30s}
+DELETE_NAMESPACE=${DELETE_NAMESPACE:-true}
+FORCE_DELETE_MC=${FORCE_DELETE_MC:-false}
 
 #========helpers======
 need(){ command -v "$1" >/dev/null 2>&1 || { echo "FATAL: '$1' not found"; exit 1; }; }
-jsonpath(){ oc -n "$NAMESPACE" get "$1" "$2" -o jsonpath="$3" 2>/dev/null || true; }
+# jsonpath(){ oc -n "$NAMESPACE" get "$1" "$2" -o jsonpath="$3" 2>/dev/null || true; }
 now(){ date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 need oc; need jq
@@ -90,14 +87,14 @@ pick_deprovision_pod() {
     oc -n $NAMESPACE get pod -l hive.openshift.io/job-type=deprovision -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
 }
 
-get_clusterdeployement() {
-    oc -n $NAMESPACE get clusterdeployment "$CLUSTER_NAME" >/dev/null 2>&1 && echo "yes" || echo "no"
-}
+# get_clusterdeployement() {
+#     oc -n $NAMESPACE get clusterdeployment "$CLUSTER_NAME" >/dev/null 2>&1 && echo "yes" || echo "no"
+# }
 
 # Deprovision CR
-list_deprovision_crs() {
-    oc -n $NAMESPACE get clusterdeprovisions -l hive.openshift.io/cluster-deployment-name="$CLUSTER_NAME" --no-headers 2>/dev/null || true
-}
+# list_deprovision_crs() {
+#     oc -n $NAMESPACE get clusterdeprovisions -l hive.openshift.io/cluster-deployment-name="$CLUSTER_NAME" --no-headers 2>/dev/null || true
+# }
 
 state_from_cd() {
    oc -n "${NAMESPACE}" get clusterdeprovisions -o json 2>/dev/null \
@@ -131,13 +128,10 @@ stop_stream() {
    CURRENT_POD=""
 }
 
-sleep 10
 
 # wait for deprovisoin and stream logs since the deprovision pod is running on hub cluster
 echo "[INFO] $(now) waiting for deprovision job to complete (timeout: ${TIMEOUT_MINUTES}m)"
 
-# POD="$(pick_deprovision_pod)"
-# echo "deprovision-pod: $POD"
 
 while true; do
 #start or switch log stream if a provision pod exists

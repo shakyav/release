@@ -12,7 +12,7 @@ set -o pipefail
 
 export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 
-curl -sL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 > /tmp/jq
+curl -sL https://github.com/jqlang/jq/releases/latest/download/jq-linux64 > /tmp/jq
 chmod +x /tmp/jq
 
 RESULT_FILE="${ARTIFACT_DIR}/junit_pre_upgrade_results.xml"
@@ -70,7 +70,7 @@ sed -i "s/skipped=\"[0-9]*\"/skipped=\"$skipped\"/" "$RESULT_FILE"
 # Configuration
 VM_NAME="vm-ephemeral"
 NAMESPACE="default"
-CSV_NAMESPACE="openshift-cnv"
+# CSV_NAMESPACE="openshift-cnv"
 TIMEOUT="300"
 WORK_DIR="/tmp/kubevirt-test-$$"
 KUBECTL_CMD="kubectl"
@@ -392,52 +392,52 @@ check_hco_status() {
 }
 
 #===========check csv status================
-check_csv_status() {
-    log_info "Checking ClusterServiceVersion (CSV) status in namespace: ${CSV_NAMESPACE}..."
+# check_csv_status() {
+#     log_info "Checking ClusterServiceVersion (CSV) status in namespace: ${CSV_NAMESPACE}..."
 
-    # Check if the namespace exists
-    if ! ${KUBECTL_CMD} get namespace "${CSV_NAMESPACE}" &> /dev/null; then
-        log_error "Namespace ${CSV_NAMESPACE} does not exist"
-        return 1
-    fi
+#     # Check if the namespace exists
+#     if ! ${KUBECTL_CMD} get namespace "${CSV_NAMESPACE}" &> /dev/null; then
+#         log_error "Namespace ${CSV_NAMESPACE} does not exist"
+#         return 1
+#     fi
 
-    # Get CSVs in the specified namespace
-    local csvs
-    csvs=$(${KUBECTL_CMD} get csv -n "${CSV_NAMESPACE}" --no-headers 2>/dev/null || echo "")
+#     # Get CSVs in the specified namespace
+#     local csvs
+#     csvs=$(${KUBECTL_CMD} get csv -n "${CSV_NAMESPACE}" --no-headers 2>/dev/null || echo "")
 
-    if [[ -z "${csvs}" ]]; then
-        log_error "No CSVs found in namespace ${CSV_NAMESPACE}"
-        return 1
-    fi
+#     if [[ -z "${csvs}" ]]; then
+#         log_error "No CSVs found in namespace ${CSV_NAMESPACE}"
+#         return 1
+#     fi
 
-    log_info "Found CSVs in namespace: ${CSV_NAMESPACE}"
+#     log_info "Found CSVs in namespace: ${CSV_NAMESPACE}"
 
-    # Check each CSV phase - all must be "Succeeded"
-    local all_succeeded=true
-    while IFS= read -r csv_line; do
-        if [[ -n "${csv_line}" ]]; then
-            local csv_name
-            csv_name=$(echo "${csv_line}" | awk '{print $1}')
-            local csv_phase
-            csv_phase=$(echo "${csv_line}" | awk '{print $6}')
+#     # Check each CSV phase - all must be "Succeeded"
+#     local all_succeeded=true
+#     while IFS= read -r csv_line; do
+#         if [[ -n "${csv_line}" ]]; then
+#             local csv_name
+#             csv_name=$(echo "${csv_line}" | awk '{print $1}')
+#             local csv_phase
+#             csv_phase=$(echo "${csv_line}" | awk '{print $6}')
 
-            if [[ "${csv_phase}" == "Succeeded" ]]; then
-                log_success "CSV ${csv_name}: ${csv_phase}"
-            else
-                log_error "CSV ${csv_name}: ${csv_phase} (expected: Succeeded)"
-                all_succeeded=false
-            fi
-        fi
-    done <<< "${csvs}"
+#             if [[ "${csv_phase}" == "Succeeded" ]]; then
+#                 log_success "CSV ${csv_name}: ${csv_phase}"
+#             else
+#                 log_error "CSV ${csv_name}: ${csv_phase} (expected: Succeeded)"
+#                 all_succeeded=false
+#             fi
+#         fi
+#     done <<< "${csvs}"
 
-    if [[ "${all_succeeded}" == "false" ]]; then
-        log_error "One or more CSVs are not in Succeeded phase in namespace ${CSV_NAMESPACE}"
-        return 1
-    fi
+#     if [[ "${all_succeeded}" == "false" ]]; then
+#         log_error "One or more CSVs are not in Succeeded phase in namespace ${CSV_NAMESPACE}"
+#         return 1
+#     fi
 
-    log_success "All CSVs in namespace ${CSV_NAMESPACE} are in Succeeded phase"
-    return 0
-}
+#     log_success "All CSVs in namespace ${CSV_NAMESPACE} are in Succeeded phase"
+#     return 0
+# }
 
 #===========================================
 
@@ -584,13 +584,13 @@ cleanup_vm() {
 }
 
 # Cleanup working directory
-cleanup_workdir() {
-    if [[ -d "${WORK_DIR}" ]]; then
-        log_info "Cleaning up working directory: ${WORK_DIR}..."
-        rm -rf ${WORK_DIR}
-        log_success "Working directory cleanup completed"
-    fi
-}
+# cleanup_workdir() {
+#     if [[ -d "${WORK_DIR}" ]]; then
+#         log_info "Cleaning up working directory: ${WORK_DIR}..."
+#         rm -rf ${WORK_DIR}
+#         log_success "Working directory cleanup completed"
+#     fi
+# }
 
 # Main function for pre-upgrade mode
 main_pre_upgrade() {
@@ -624,7 +624,7 @@ main_pre_upgrade() {
         log_info "Run with --mode post-upgrade after the upgrade to verify functionality."
 
         # Remove VM cleanup trap, keep only workdir cleanup
-        trap 'cleanup_workdir' EXIT
+        # trap 'cleanup_workdir' EXIT
     else
         log_error "VM deployment failed in pre-upgrade mode"
         show_vm_details

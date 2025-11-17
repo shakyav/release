@@ -58,9 +58,9 @@ tests:
   steps:
     cluster_profile: aws-cspi-qe
     env:
+      ACM_MANAGED_CLUSTER_NAME: acm-spoke
       BASE_DOMAIN: cspilp.interop.ccitredhat.com
       CLOUD_PROVIDER: ipi-aws
-      CLUSTER_NAME: acm-spoke
       COMPUTE_NODE_TYPE: m6a.2xlarge
       FIREWATCH_CONFIG: |
         {
@@ -93,6 +93,13 @@ tests:
         ]
       USER_TAGS: |
         scenario acm-cnv-p2p
+    leases:
+    - count: 1
+      env: LEASED_RESOURCE
+      resource_type: aws-cspi-qe-quota-slice
+    - count: 1
+      env: MANAGED_CLUSTER_LEASED_RESOURCE
+      resource_type: aws-cspi-qe-quota-slice
     post:
     - ref: acm-fetch-operator-versions
     - ref: acm-must-gather

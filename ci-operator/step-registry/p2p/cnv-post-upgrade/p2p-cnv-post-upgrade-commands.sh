@@ -13,7 +13,7 @@ set -o pipefail
 
 export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 
-curl -sL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 > /tmp/jq
+curl -sL https://github.com/jqlang/jq/releases/latest/download/jq-linux64 > /tmp/jq
 chmod +x /tmp/jq
 
 
@@ -73,11 +73,9 @@ VM_NAME="vm-ephemeral"
 NAMESPACE="default"
 CSV_NAMESPACE="openshift-cnv"
 TIMEOUT="600"
-WORK_DIR="/tmp/kubevirt-test"
+# WORK_DIR="/tmp/kubevirt-test"
 KUBECTL_CMD="kubectl"
 VIRTCTL_CMD="virtctl"
-# MODE=""
-# VM_IMAGE="quay.io/kubevirt/cirros-container-disk-demo:devel"
 
 # Colors for output
 RED='\033[0;31m'
@@ -486,13 +484,13 @@ cleanup_vm() {
 }
 
 # Cleanup working directory
-cleanup_workdir() {
-    if [[ -d "${WORK_DIR}" ]]; then
-        log_info "Cleaning up working directory: ${WORK_DIR}..."
-        rm -rf ${WORK_DIR}
-        log_success "Working directory cleanup completed"
-    fi
-}
+# cleanup_workdir() {
+#     if [[ -d "${WORK_DIR}" ]]; then
+#         log_info "Cleaning up working directory: ${WORK_DIR}..."
+#         rm -rf ${WORK_DIR}
+#         log_success "Working directory cleanup completed"
+#     fi
+# }
 
 # Main function for post-upgrade mode
 main_post_upgrade() {
@@ -576,8 +574,3 @@ main_cleanup() {
 # Run main function
 main_post_upgrade
 main_cleanup
-set +e 
-virtctl version
-ret=$?
-echo $ret
-set -e

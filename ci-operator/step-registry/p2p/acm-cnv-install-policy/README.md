@@ -2,7 +2,7 @@
 
 ## What this step does ?
 
-1. Creates a Policy object in ACM that installs the CNV operator(kubevirt-hyperconverged) on selected clusterset
+1. Creates a Policy object in ACM that installs the OpenShift Virtualization on selected clusterset
 
 2. Ensures that a ManagedCLusterBinding exist so that ACM can apply policy on targeted clusterset
 

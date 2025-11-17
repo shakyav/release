@@ -6,12 +6,12 @@ set -o pipefail
 
 
 
-cp -L $KUBECONFIG /tmp/kubeconfig
+# cp -L $KUBECONFIG /tmp/kubeconfig
 
-export KUBECONFIG=/tmp/kubeconfig
+export KUBECONFIG=${SHARED_DIR}/kubeconfig
 
 CLUSTER_NAME="$(cat "${SHARED_DIR}/managed.cluster.name")"
-POLICY_NS=${POLICY_NS:-"install-cnv"}
+POLICY_NS="install-cnv"
 
 # create policy namespace
 oc create namespace $POLICY_NS
@@ -210,8 +210,6 @@ subjects:
     kind: Policy
 
 EOF
-
-sleep 900
 
 oc --kubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig" wait hyperconverged -n openshift-cnv kubevirt-hyperconverged --for=condition=Available --timeout=20m
 

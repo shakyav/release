@@ -1,16 +1,20 @@
 #!/bin/bash
 
-set -o nounset
-set -o errexit
-set -o pipefail
+# set -o nounset
+# set -o errexit
+# set -o pipefail
+
+set -euo pipefail; shopt -s inherit_errexit
 
 
-
+export TARGET_CHANNEL
+export RC_STREAM
+export RC_HOST_AMD64
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
-RC_HOST_AMD64="${RC_HOST_AMD64:-https://amd64.ocp.releases.ci.openshift.org}"
-RC_STREAM="4-stable"
+# RC_HOST_AMD64="${RC_HOST_AMD64:-https://amd64.ocp.releases.ci.openshift.org}"
+# RC_STREAM="4-stable"
 
 url="${RC_HOST_AMD64}/api/v1/releasestream/${RC_STREAM}/latest"
 echo ${url}
@@ -39,9 +43,9 @@ latest_release_image(){
 echo "Resolving latest RC's from release Controller (stream=${RC_STREAM})..."
 TARGET_VERSION="$(latest_rc_from_release_controller)"
 
-echo "Target version: ${TARGET_VERSION}"
-TARGET_CHANNEL=${TARGET_CHANNEL:-candidate-4.20}
-echo "TARGET channel: ${TARGET_CHANNEL}"
+# echo "Target version: ${TARGET_VERSION}"
+# TARGET_CHANNEL=${TARGET_CHANNEL:-candidate-4.20}
+# echo "TARGET channel: ${TARGET_CHANNEL}"
 
 TARGET_IMAGE="$(latest_release_image)"
 echo "Release_image: ${TARGET_IMAGE}"
@@ -58,8 +62,10 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1" >&2; ex
 need jq
 
 # check hub and spoke config files are available
-[[ -f "${HUB_KUBECONFIG}" ]] || { echo "Hub kubeconfig not found:${HUB_KUBECONFIG}" >&2; exit 1; }
-[[ -f "${SPOKE_KUBECONFIG}" ]] || { echo "Spoke kubeconfig not found:${SPOKE_KUBECONFIG}" >&2; exit 1; }
+# [[ -f "${HUB_KUBECONFIG}" ]] || { echo "Hub kubeconfig not found:${HUB_KUBECONFIG}" >&2; exit 1; }
+# [[ -f "${SPOKE_KUBECONFIG}" ]] || { echo "Spoke kubeconfig not found:${SPOKE_KUBECONFIG}" >&2; exit 1; }
+[ -f "${HUB_KUBECONFIG}" ]
+[ -f "${SPOKE_KUBECONFIG}" ]
 
 now() { date +%s; }
 

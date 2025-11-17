@@ -4,6 +4,7 @@ ref:
     namespace: ocp
     name: cli-jq
     tag: latest
+  timeout: 5h
   commands: p2p-acm-cluster-install-commands.sh
   grace_period: 30m0s
   resources:
@@ -27,7 +28,7 @@ ref:
       default: "3"
       documentation: |-
         Control Plane replicas
-    - name: CLUSTER_NAME
+    - name: ACM_MANAGED_CLUSTER_NAME
       default: "acm-spoke"
       documentation: |-
         ACM spoke Cluster name
@@ -47,10 +48,14 @@ ref:
       default: "OVNKubernetes"
       documentation: |-
        Network type for cluster
-    - name: OCP_RELEASE_IMAGE
-      default: "quay.io/openshift-release-dev/ocp-release:4.19.14-multi"
+    - name: INSTALL_TIMEOUT_MINUTES
+      default: "120"
       documentation: |-
-        OCP release image for managed cluster
+        CLuster install timeout
+    - name: SPOKE_CLUSTER_VERSION
+      default: "4.19"
+      documentation: |-
+        Spoke cluster version X.Y
     
   documentation: |-
     Creates the acm spoke cluster
