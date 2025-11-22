@@ -211,5 +211,5 @@ subjects:
 
 EOF
 
-oc --kubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig" wait hyperconverged -n openshift-cnv kubevirt-hyperconverged --for=condition=Available --timeout=20m
+oc --kubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig" wait hyperconverged -n openshift-cnv kubevirt-hyperconverged --for=condition=Available --timeout=50m
 
