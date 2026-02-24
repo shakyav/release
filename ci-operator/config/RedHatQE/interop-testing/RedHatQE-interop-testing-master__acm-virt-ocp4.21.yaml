@@ -56,11 +56,7 @@ resources:
       cpu: 200m
       memory: 400Mi
 tests:
-<<<<<<<< HEAD:ci-operator/config/RedHatQE/interop-testing/RedHatQE-interop-testing-master__acm-cnv-ocp-4.21-p2p.yaml
-- as: lp-interop-aws
-========
 - as: aws-p2p-lp-interop
->>>>>>>> 5579e964adf (update job name):ci-operator/config/RedHatQE/interop-testing/RedHatQE-interop-testing-master__acm-virt-ocp4.21.yaml
   cron: 0 23 31 2 *
   steps:
     cluster_profile: aws-cspi-qe
@@ -136,8 +132,4 @@ zz_generated_metadata:
   branch: master
   org: RedHatQE
   repo: interop-testing
-<<<<<<<< HEAD:ci-operator/config/RedHatQE/interop-testing/RedHatQE-interop-testing-master__acm-cnv-ocp-4.21-p2p.yaml
-  variant: acm-cnv-ocp-4.21-p2p
-========
   variant: acm-virt-ocp4.21
->>>>>>>> 5579e964adf (update job name):ci-operator/config/RedHatQE/interop-testing/RedHatQE-interop-testing-master__acm-virt-ocp4.21.yaml
