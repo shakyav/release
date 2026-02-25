@@ -250,23 +250,35 @@ oc get sc # After
 cnv::reimport_datavolumes
 
 rc=0
+# uv --verbose --cache-dir /tmp/uv-cache \
+#     run pytest -o cache_dir=/tmp/pytest-cache \
+#     -s \
+#     -o log_cli=true \
+#     --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
+#     --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
+#     --junitxml "${JUNIT_RESULTS_FILE}" \
+#     --html="${HTML_RESULTS_FILE}" --self-contained-html \
+#     --tc-file=tests/global_config.py \
+#     --tb=native \
+#     --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
+#     --tc default_volume_mode:Block \
+#     --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
+#     --latest-rhel \
+#     --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
+#     --leftovers-collector \
+#     -m smoke || rc=$?
+
 uv --verbose --cache-dir /tmp/uv-cache \
-    run pytest -o cache_dir=/tmp/pytest-cache \
-    -s \
-    -o log_cli=true \
-    --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-    --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
-    --junitxml "${JUNIT_RESULTS_FILE}" \
-    --html="${HTML_RESULTS_FILE}" --self-contained-html \
-    --tc-file=tests/global_config.py \
-    --tb=native \
-    --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
-    --tc default_volume_mode:Block \
-    --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
-    --latest-rhel \
-    --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
-    --leftovers-collector \
-    -m smoke || rc=$?
+   run pytest -o cache_dir=/tmp/pytest-cache\
+   -s \
+   -o log_cli=true \
+   --upgrade=ocp \
+   --ocp-image quay.io/openshift-release-dev/ocp-release:4.18.25-x86_64 \
+   --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization\
+   --junitxml="${JUNIT_RESULTS_FILE}" \
+   --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
+   --data-collector \
+   --tb=native
 
 # TODO: Fix junit, spyglass still show "nil" for failed jobs.
 #       (This attempt didn't work)
