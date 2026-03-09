@@ -4,6 +4,12 @@ set -o nounset
 set -o errexit
 set -o pipefail
 
+if [[ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]]; then
+  export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
+  echo "🔑 Using managed cluster kubeconfig: ${KUBECONFIG}"
+fi
+
+
 ODF_INSTALL_NAMESPACE=openshift-storage
 DEFAULT_ODF_OPERATOR_CHANNEL="stable-${ODF_VERSION_MAJOR_MINOR}"
 ODF_OPERATOR_CHANNEL="${ODF_OPERATOR_CHANNEL:-${DEFAULT_ODF_OPERATOR_CHANNEL}}"
