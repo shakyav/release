@@ -197,18 +197,18 @@ function install_yq_if_not_exists() {
     fi
 }
 
-function mapTestsForComponentReadiness() {
+# function mapTestsForComponentReadiness() {
 
-    [[ ${MAP_TESTS:-false} != "true" ]] && return
+#     [[ ${MAP_TESTS:-false} != "true" ]] && return
 
-    results_file="${1}"
-    echo "Patching Tests Result File: ${results_file}"
-    if [ -f "${results_file}" ]; then
-        install_yq_if_not_exists
-        echo "Mapping Test Suite Name To: CNV-lp-interop"
-        yq eval -px -ox -iI0 '.testsuites.testsuite.+@name="CNV-lp-interop"' $results_file
-    fi
-}
+#     results_file="${1}"
+#     echo "Patching Tests Result File: ${results_file}"
+#     if [ -f "${results_file}" ]; then
+#         install_yq_if_not_exists
+#         echo "Mapping Test Suite Name To: CNV-lp-interop"
+#         yq eval -px -ox -iI0 '.testsuites.testsuite.+@name="CNV-lp-interop"' $results_file
+#     fi
+# }
 
 BIN_FOLDER=$(mktemp -d /tmp/bin.XXXX)
 OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
@@ -250,25 +250,36 @@ oc get sc # After
 cnv::reimport_datavolumes
 
 rc=0
+# uv --verbose --cache-dir /tmp/uv-cache \
+#     run pytest -o cache_dir=/tmp/pytest-cache \
+#     -s \
+#     -o log_cli=true \
+#     --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
+#     --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
+#     --junitxml "${JUNIT_RESULTS_FILE}" \
+#     --html="${HTML_RESULTS_FILE}" --self-contained-html \
+#     --tc-file=tests/global_config.py \
+#     --tb=native \
+#     --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
+#     --tc default_volume_mode:Block \
+#     --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
+#     --latest-rhel \
+#     --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
+#     --leftovers-collector \
+#     -m smoke || rc=$?
+
 uv --verbose --cache-dir /tmp/uv-cache \
-    run pytest -o cache_dir=/tmp/pytest-cache \
-    -s \
-    -o log_cli=true \
-    --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-    --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
-    --junitxml "${JUNIT_RESULTS_FILE}" \
-    --html="${HTML_RESULTS_FILE}" --self-contained-html \
-    --tc-file=tests/global_config.py \
-    --tb=native \
-    --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
-    --tc default_volume_mode:Block \
-    --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
-    --latest-rhel \
-    --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
-    --leftovers-collector \
-    -m smoke || rc=$?
-
-
+   run pytest -o cache_dir=/tmp/pytest-cache\
+   -s \
+   -o log_cli=true \
+   --upgrade=ocp \
+   --ocp-image "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" \
+   --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization\
+   --junitxml="${JUNIT_RESULTS_FILE}" \
+   --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
+   --data-collector \
+   --tb=native \
+   || rc=$?
 
 # TODO: Fix junit, spyglass still show "nil" for failed jobs.
 #       (This attempt didn't work)
@@ -280,7 +291,7 @@ uv --verbose --cache-dir /tmp/uv-cache \
 # fi
 
 # Map tests if needed for related use cases
-mapTestsForComponentReadiness "${JUNIT_RESULTS_FILE}"
+# mapTestsForComponentReadiness "${JUNIT_RESULTS_FILE}"
 
 # Send junit file to shared dir for Data Router Reporter step
 cp "${JUNIT_RESULTS_FILE}" "${SHARED_DIR}"
