@@ -30,8 +30,8 @@ debug_on_exit() {
     # The 'sleep' command will be interrupted by Ctrl+C.
     # To make the sleep uninterruptible by Ctrl+C, you could add:
     # trap '' SIGINT SIGTERM
-    oc get -n "${hco_namespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
-    oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
+    oc get -n "${hco_namespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACTS_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
+    oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACTS_DIR}"/hco.log
 
     runMustGather
     echo "    😴 😴 😴"
@@ -70,7 +70,7 @@ function getMustGatherImage() {
 function runMustGather() {
     local IMAGE
     local FALLBACK_IMAGE="registry.redhat.io/container-native-virtualization/cnv-must-gather-rhel9:v${OCP_VERSION}"
-    local MUST_GATHER_CNV_DIR="${ARTIFACT_DIR}/must-gather-cnv"
+    local MUST_GATHER_CNV_DIR="${ARTIFACTS_DIR}/must-gather-cnv"
 
     IMAGE=$(getMustGatherImage)
     if [[ -z $IMAGE ]]; then
@@ -209,7 +209,7 @@ function install_yq_if_not_exists() {
 #         yq eval -px -ox -iI0 '.testsuites.testsuite.+@name="CNV-lp-interop"' $results_file
 #     fi
 # }
-
+export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 BIN_FOLDER=$(mktemp -d /tmp/bin.XXXX)
 OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
 
@@ -241,21 +241,23 @@ unset KUBERNETES_PORT_443_TCP_PORT
 # Get oc binary
 curl -sL "${OC_URL}" | tar -C "${BIN_FOLDER}" -xzvf - oc
 
+
 oc whoami --show-console
-HCO_SUBSCRIPTION=$(oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}')
+oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}'
 
 oc get sc # Before
 setDefaultStorageClass 'ocs-storagecluster-ceph-rbd-virtualization'
 oc get sc # After
 cnv::reimport_datavolumes
 
+
 rc=0
 # uv --verbose --cache-dir /tmp/uv-cache \
 #     run pytest -o cache_dir=/tmp/pytest-cache \
 #     -s \
 #     -o log_cli=true \
-#     --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-#     --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
+#     --pytest-log-file="${ARTIFACTS_DIR}/tests.log" \
+#     --data-collector --data-collector-output-dir="${ARTIFACTS_DIR}/" \
 #     --junitxml "${JUNIT_RESULTS_FILE}" \
 #     --html="${HTML_RESULTS_FILE}" --self-contained-html \
 #     --tc-file=tests/global_config.py \
@@ -273,11 +275,11 @@ uv --verbose --cache-dir /tmp/uv-cache \
    -s \
    -o log_cli=true \
    --upgrade=ocp \
-   --ocp-image "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" \
+   --ocp-image "${ORIGINAL_RELEASE_IMAGE_LATEST}" \
    --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization\
    --junitxml="${JUNIT_RESULTS_FILE}" \
    --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-   --data-collector \
+   --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
    --tb=native \
    || rc=$?
 
