@@ -30,8 +30,8 @@ debug_on_exit() {
     # The 'sleep' command will be interrupted by Ctrl+C.
     # To make the sleep uninterruptible by Ctrl+C, you could add:
     # trap '' SIGINT SIGTERM
-    oc get -n "${hco_namespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACTS_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
-    oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACTS_DIR}"/hco.log
+    oc get -n "${hco_namespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
+    oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
 
     runMustGather
     echo "    😴 😴 😴"
@@ -70,7 +70,7 @@ function getMustGatherImage() {
 function runMustGather() {
     local IMAGE
     local FALLBACK_IMAGE="registry.redhat.io/container-native-virtualization/cnv-must-gather-rhel9:v${OCP_VERSION}"
-    local MUST_GATHER_CNV_DIR="${ARTIFACTS_DIR}/must-gather-cnv"
+    local MUST_GATHER_CNV_DIR="${ARTIFACT_DIR}/must-gather-cnv"
 
     IMAGE=$(getMustGatherImage)
     if [[ -z $IMAGE ]]; then
@@ -243,14 +243,14 @@ curl -sL "${OC_URL}" | tar -C "${BIN_FOLDER}" -xzvf - oc
 
 
 oc whoami --show-console
-oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}'
+HCO_SUBSCRIPTION=$(oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}')
 
 oc get sc # Before
 setDefaultStorageClass 'ocs-storagecluster-ceph-rbd-virtualization'
 oc get sc # After
 cnv::reimport_datavolumes
 
-
+sleep 1800
 rc=0
 # uv --verbose --cache-dir /tmp/uv-cache \
 #     run pytest -o cache_dir=/tmp/pytest-cache \
@@ -280,6 +280,7 @@ uv --verbose --cache-dir /tmp/uv-cache \
    --junitxml="${JUNIT_RESULTS_FILE}" \
    --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
    --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
+   --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
    --tb=native \
    || rc=$?
 
