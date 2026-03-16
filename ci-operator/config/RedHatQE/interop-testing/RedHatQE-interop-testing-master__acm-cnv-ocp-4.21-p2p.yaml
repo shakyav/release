@@ -44,8 +44,8 @@ images:
     USER root
     RUN dnf install -y sshpass openssh-clients
     RUN dnf clean all
-  from: virtctl
-  to: virtctl-sshpass
+  from: openshift-virtualization-tests
+  to: openshift-virtualization-tests-sshpass
 releases:
   initial:
     release:
