@@ -213,7 +213,42 @@ export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 BIN_FOLDER=$(mktemp -d /tmp/bin.XXXX)
 OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
 
+
 # Exports
+export PATH="${BIN_FOLDER}:${PATH}"
+
+
+# Fetch domain and trim any newlines/carriage returns
+# Install and verify virtctl (same approach as redhat-lp-chaos)
+function installAndVerifyVirtctl() {
+    local baseURL
+    if ! baseURL=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}' | tr -d '\n\r'); then
+        echo "FATAL ERROR: Failed to get OpenShift cluster base domain."
+        exit 1
+    fi
+
+    local dlURL="https://hyperconverged-cluster-cli-download-openshift-cnv.${baseURL}/amd64/linux/virtctl.tar.gz"
+    if ! curl -kfsSL "${dlURL}" | tar -xzvf - -C "${BIN_FOLDER}"; then
+        echo "FATAL ERROR: Failed to download and extract virtctl."
+        exit 1
+    fi
+
+    # Handle virtctl in subdirectory (archive may have virtctl-4.x.x/virtctl)
+    if [[ ! -x "${BIN_FOLDER}/virtctl" ]]; then
+        local virtctl_path
+        virtctl_path=$(find "${BIN_FOLDER}" -name virtctl -type f -executable 2>/dev/null | head -1)
+        if [[ -n "${virtctl_path}" ]]; then
+            mv "${virtctl_path}" "${BIN_FOLDER}/virtctl"
+        fi
+    fi
+
+    if ! virtctl version --client; then
+        echo "FATAL ERROR: virtctl installed but failed to execute after setup."
+        exit 1
+    fi
+}
+
+
 export PATH="${BIN_FOLDER}:${PATH}"
 export OPENSHIFT_PYTHON_WRAPPER_LOG_FILE="${ARTIFACT_DIR}/openshift_python_wrapper.log"
 export JUNIT_RESULTS_FILE="${ARTIFACT_DIR}/junit_results.xml"
@@ -249,6 +284,8 @@ oc get sc # Before
 setDefaultStorageClass 'ocs-storagecluster-ceph-rbd-virtualization'
 oc get sc # After
 cnv::reimport_datavolumes
+
+installAndVerifyVirtctl
 
 sleep 1800
 rc=0
