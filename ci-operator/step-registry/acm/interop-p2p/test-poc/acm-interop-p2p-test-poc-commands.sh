@@ -13,4 +13,4 @@ set -euxo pipefail; shopt -s inherit_errexit
 #=====================
 
 # Sleep 7h (25200s) - step timeout is 8h, leaving 1h buffer
-sleep 25200
+sleep 64800

@@ -63,9 +63,6 @@ tests:
     dependencies:
       OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
     env:
-      ACM_SPOKE_CLUSTER_COUNT: "2"
-      ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.20"
-      ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
       BASE_DOMAIN: cspilp.interop.ccitredhat.com
       COMPUTE_NODE_TYPE: c5n.metal
       FIREWATCH_CONFIG: |
@@ -105,9 +102,6 @@ tests:
     - count: 1
       env: LEASED_RESOURCE
       resource_type: aws-cspi-qe-quota-slice
-    - count: 2
-      env: MANAGED_CLUSTER_LEASED_RESOURCE
-      resource_type: aws-cspi-qe-quota-slice
     post:
     - ref: gather-aws-console
     - ref: acm-interop-p2p-cluster-uninstall
@@ -125,9 +119,8 @@ tests:
     - ref: install-operators
     - ref: interop-tests-deploy-odf
     - ref: acm-mch
-    - ref: acm-interop-p2p-cluster-install
     - ref: acm-interop-p2p-test-poc
-  timeout: 8h0m0s
+  timeout: 20h0m0s
 zz_generated_metadata:
   branch: master
   org: RedHatQE
