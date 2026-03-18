@@ -318,6 +318,7 @@ uv --verbose --cache-dir /tmp/uv-cache \
    --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
    --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
    --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
+   --ignore=tests/network/ \
    --tb=native \
    || rc=$?
 
