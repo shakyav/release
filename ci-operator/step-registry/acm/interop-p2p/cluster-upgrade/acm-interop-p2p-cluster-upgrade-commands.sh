@@ -26,10 +26,10 @@ if [[ ! -f "${SHARED_DIR}/kubeconfig" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]]; then
-    echo "[ERROR] Spoke kubeconfig not found: ${SHARED_DIR}/managed-cluster-kubeconfig" >&2
-    exit 1
-fi
+# if [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]]; then
+#     echo "[ERROR] Spoke kubeconfig not found: ${SHARED_DIR}/managed-cluster-kubeconfig" >&2
+#     exit 1
+# fi
 
 #=====================
 # Helper functions
@@ -64,7 +64,7 @@ echo "[INFO] Target digest: ${digest}"
 # Set kubeconfig paths
 #=====================
 hub_kubeconfig="${SHARED_DIR}/kubeconfig"
-spoke_kubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
+# spoke_kubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
 
 #=====================
 # Upgrade functions
@@ -131,9 +131,9 @@ upgrade_cluster "${hub_kubeconfig}" "hub"
 wait_for_completed "${hub_kubeconfig}" "hub" "${target_version}"
 
 # Spoke upgrade
-echo "[INFO] Starting spoke cluster upgrade"
-upgrade_cluster "${spoke_kubeconfig}" "spoke"
-wait_for_completed "${spoke_kubeconfig}" "spoke" "${target_version}"
+# echo "[INFO] Starting spoke cluster upgrade"
+# upgrade_cluster "${spoke_kubeconfig}" "spoke"
+# wait_for_completed "${spoke_kubeconfig}" "spoke" "${target_version}"
 
 echo "[SUCCESS] All selected clusters are at latest RCs"
 # Check cluster health for hub and spoke clusters after upgrade

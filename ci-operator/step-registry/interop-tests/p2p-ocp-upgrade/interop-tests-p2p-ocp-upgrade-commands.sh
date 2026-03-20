@@ -197,28 +197,6 @@ function install_yq_if_not_exists() {
     fi
 }
 
-# function mapTestsForComponentReadiness() {
-
-#     [[ ${MAP_TESTS:-false} != "true" ]] && return
-
-#     results_file="${1}"
-#     echo "Patching Tests Result File: ${results_file}"
-#     if [ -f "${results_file}" ]; then
-#         install_yq_if_not_exists
-#         echo "Mapping Test Suite Name To: CNV-lp-interop"
-#         yq eval -px -ox -iI0 '.testsuites.testsuite.+@name="CNV-lp-interop"' $results_file
-#     fi
-# }
-export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
-BIN_FOLDER=$(mktemp -d /tmp/bin.XXXX)
-OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
-
-
-# Exports
-export PATH="${BIN_FOLDER}:${PATH}"
-
-
-# Fetch domain and trim any newlines/carriage returns
 # Install and verify virtctl (same approach as redhat-lp-chaos)
 function installAndVerifyVirtctl() {
     local baseURL
@@ -248,6 +226,11 @@ function installAndVerifyVirtctl() {
     fi
 }
 
+BIN_FOLDER=$(mktemp -d /tmp/bin.XXXX)
+OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
+
+
+# Exports
 
 export PATH="${BIN_FOLDER}:${PATH}"
 export OPENSHIFT_PYTHON_WRAPPER_LOG_FILE="${ARTIFACT_DIR}/openshift_python_wrapper.log"
@@ -276,7 +259,7 @@ unset KUBERNETES_PORT_443_TCP_PORT
 # Get oc binary
 curl -sL "${OC_URL}" | tar -C "${BIN_FOLDER}" -xzvf - oc
 
-
+export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 oc whoami --show-console
 HCO_SUBSCRIPTION=$(oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}')
 
@@ -287,25 +270,29 @@ cnv::reimport_datavolumes
 
 installAndVerifyVirtctl
 
-sleep 1800
+echo "[INFO] Resolving latest RC's from release Controller..."
+target_version="$(oc adm release info "${ORIGINAL_RELEASE_IMAGE_LATEST}" -o json | jq -r '.metadata.version')"
+
+if [[ -z "${target_version}" ]]; then
+    echo "[ERROR] Failed to get target version from release image" >&2
+    exit 1
+fi
+
+# Get image digest, digest is required to safely upgrade the cluster using release image
+# digest="$(oc adm release info "${ORIGINAL_RELEASE_IMAGE_LATEST}" -o json | jq -r .digest)"
+
+# if [[ -z "${digest}" ]]; then
+#     echo "[ERROR] Failed to get digest from release image" >&2
+#     exit 1
+# fi
+
+# echo "[INFO] Target version: ${target_version}"
+# echo "[INFO] Target digest: ${digest}"
+
+# repo="${ORIGINAL_RELEASE_IMAGE_LATEST%:*}"
+# echo "[INFO] Repository: ${repo}"
+
 rc=0
-# uv --verbose --cache-dir /tmp/uv-cache \
-#     run pytest -o cache_dir=/tmp/pytest-cache \
-#     -s \
-#     -o log_cli=true \
-#     --pytest-log-file="${ARTIFACTS_DIR}/tests.log" \
-#     --data-collector --data-collector-output-dir="${ARTIFACTS_DIR}/" \
-#     --junitxml "${JUNIT_RESULTS_FILE}" \
-#     --html="${HTML_RESULTS_FILE}" --self-contained-html \
-#     --tc-file=tests/global_config.py \
-#     --tb=native \
-#     --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
-#     --tc default_volume_mode:Block \
-#     --tc "hco_subscription:${HCO_SUBSCRIPTION}" \
-#     --latest-rhel \
-#     --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
-#     --leftovers-collector \
-#     -m smoke || rc=$?
 
 uv --verbose --cache-dir /tmp/uv-cache \
    run pytest -o cache_dir=/tmp/pytest-cache\

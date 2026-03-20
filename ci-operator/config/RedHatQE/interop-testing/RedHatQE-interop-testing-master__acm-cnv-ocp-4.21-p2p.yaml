@@ -140,7 +140,8 @@ tests:
     - ref: acm-fetch-managed-clusters
     - ref: interop-tests-deploy-odf
     - ref: p2p-acm-cnv-install-policy
-    - ref: interop-tests-p2p-virt-upgrade
+    - ref: acm-interop-p2p-cluster-upgrade
+    - ref: interop-tests-p2p-ocp-upgrade
   timeout: 8h0m0s
 zz_generated_metadata:
   branch: master

@@ -1,5 +1,5 @@
 {
-	"path": "interop-tests/p2p-virt-upgrade/interop-tests-p2p-virt-upgrade-ref.yaml",
+	"path": "interop-tests/p2p-ocp-upgrade/interop-tests-p2p-ocp-upgrade-ref.yaml",
 	"owners": {
 		"approvers": [
 			"cspi-qe-ocp-lp"

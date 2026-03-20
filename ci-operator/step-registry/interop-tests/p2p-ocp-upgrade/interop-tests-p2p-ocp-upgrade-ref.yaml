@@ -1,9 +1,9 @@
 ref:
-  as: interop-tests-p2p-virt-upgrade
+  as: interop-tests-p2p-ocp-upgrade
   documentation: |-
     Run Verification tests for Openshift Virtualization
   from: openshift-virtualization-tests-sshpass
-  commands: interop-tests-p2p-virt-upgrade-commands.sh
+  commands: interop-tests-p2p-ocp-upgrade-commands.sh
   timeout: 4h0m0s
   grace_period: 2h
   cli: latest
