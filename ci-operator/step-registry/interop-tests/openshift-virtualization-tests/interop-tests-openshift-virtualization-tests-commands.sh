@@ -4,34 +4,33 @@
 # optional junit mapping, copy results to SHARED_DIR. See ref env (e.g. CNV_TESTS_UPGRADE_ONLY).
 # Shell: xtrace on from start; off only while reading Bitwarden files and exporting tokens; on again after (MPEX Section0).
 #
-set -euxo pipefail
-shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
-typeset -i start_time=${SECONDS}
+typeset -i startTime=${SECONDS}
 
 # shellcheck disable=SC2329
-debug_on_exit() {
-    local -i exit_code="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
-    local -i script_start_time="${1:?MUST give the script start time.}"; (($#)) && shift
-    local -i execution_time=$((SECONDS - script_start_time))
-    local -i debug_threshold=720 # 12 minutes in seconds
-    local hco_namespace=openshift-cnv
-    local lockfile=/tmp/debug_marker
+DebugOnExit() {
+    typeset -i exitCode="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
+    typeset -i scriptStartTime="${1:?MUST give the script start time.}"; (($#)) && shift
+    typeset -i executionTime=$((SECONDS - scriptStartTime))
+    typeset -i debugThreshold=720 # 12 minutes in seconds
+    typeset hcoNamespace="openshift-cnv"
+    typeset lockfile=/tmp/debug_marker
     set +e
 
-    if [[ (${execution_time} -lt ${debug_threshold}) || ${exit_code} -ne 0 ]]; then
+    if [[ (${executionTime} -lt ${debugThreshold}) || ${exitCode} -ne 0 ]]; then
         echo
         echo "--------------------------------------------------------------------------------"
-        echo " SCRIPT EXITED PREMATURELY (runtime: ${execution_time}s) "
+        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) "
         echo "--------------------------------------------------------------------------------"
         echo "Entering debug sleep. You can now inspect the system state."
         echo "Remove the file: ${lockfile}, to continue script execution."
         echo "PID: $$"
-        echo "Exit Code: ${exit_code}"
+        echo "Exit Code: ${exitCode}"
         echo "--------------------------------------------------------------------------------"
         echo "Dump HCO CR and logs for debugging."
-        oc get -n "${hco_namespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
-        oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
+        oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
+        oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
         echo "--------------------------------------------------------------------------------"
         echo "Run must-gather for additional debugging information."
         RunMustGather
@@ -40,14 +39,14 @@ debug_on_exit() {
 
         # Use file flag so loop can be interrupted by removing the file
         touch "${lockfile}"
-        local -i attempts=120
-        local -i attempt_count=0
-        local -i sleep_time=120
+        typeset -i attempts=120
+        typeset -i attemptCount=0
+        typeset -i sleepTime=120
         set +x
         while [[ -f "${lockfile}" ]]; do
-            sleep "${sleep_time}"
-            ((attempt_count++))
-            if [[ ${attempt_count} -ge ${attempts} ]]; then
+            sleep "${sleepTime}"
+            ((attemptCount++))
+            if [[ ${attemptCount} -ge ${attempts} ]]; then
                 echo "Timed out waiting for lockfile to be removed."
                 break
             fi
@@ -56,13 +55,13 @@ debug_on_exit() {
     fi
 
     # exit with the original exit code.
-    exit "${exit_code}"
+    exit "${exitCode}"
 }
 
 if [[ "${MAP_TESTS}" == "true" ]]; then
     # Map results by setting identifier prefix in tests suites names for reporting tools
     # Merge original results into a single file and compress
-    # Send modified file to shared dir for Data Router Reporter step (run here so EXIT stays debug_on_exit).
+    # Send modified file to shared dir for Data Router Reporter step (run here so EXIT stays DebugOnExit).
     eval "$(
         typeset -a _fURL=()
         type -t wget 1>/dev/null && _fURL=(wget -qO-) || _fURL=(curl -fsSL)
@@ -74,10 +73,10 @@ if [[ "${MAP_TESTS}" == "true" ]]; then
         typeset -i ec=$?
         LP_IO__ET_PPP__NEW_TS_NAME="${DR__RP__CR_COMP_NAME}--%s" \
             ExitTrap--PostProcessPrep junit--cnv__interop-tests__openshift-virtualization-tests.xml || true
-        debug_on_exit "${ec}" "${start_time}"
+        DebugOnExit "${ec}" "${startTime}"
     ' EXIT
 else
-    trap 'debug_on_exit "$?" "${start_time}"' EXIT
+    trap 'DebugOnExit "$?" "${startTime}"' EXIT
 fi
 
 SetDefaultStorageClass() {
