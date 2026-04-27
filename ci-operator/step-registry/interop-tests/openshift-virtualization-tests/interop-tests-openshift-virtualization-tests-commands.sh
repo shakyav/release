@@ -160,7 +160,7 @@ Cnv__ReimportDatavolumes() {
     Cnv__ToggleCommonBootImageImport "false"
     sleep 1
 
-    oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete'
+    oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete' --timeout=10m
 
     # `oc delete` command does not account for dependencies or the sequence in which OpenShift resources are managed.
     # So we need to run the following commands in order to avoid issues like:
@@ -331,6 +331,7 @@ else
         -m smoke \
         || exitCode=$?
 fi
+
 
 # Send junit file to shared dir for Data Router Reporter step.
 # Guard the copy: pytest may not produce the file when it fails before the collection phase.
