@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# Upgrades hub and spoke clusters to the release image in OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
+# Upgrades the hub cluster to the release image in OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
 # (sourced from release:latest via the ref dependency).
 # Patches ACM_CLUSTER_UPGRADE_TARGET_CHANNEL when set, admin-ack from Upgradeable condition, then initiates
-# and waits for clusterversion upgrade to complete. Hub is upgraded first, then spoke.
+# and waits for clusterversion upgrade to complete.
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -15,7 +15,6 @@ eval "$(
 
 [[ -n "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" ]]
 [ -f "${SHARED_DIR}/kubeconfig" ]
-[ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
 
 typeset targetVersion=''
 typeset digest=''
@@ -136,18 +135,13 @@ digest="$(jq -r '.digest' <<< "${releaseInfoJson}")"
 # Kubeconfig paths
 #=====================
 typeset hubKubeconfig="${SHARED_DIR}/kubeconfig"
-typeset spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
 
 #=====================
-# Execute upgrades — hub then spoke
+# Execute upgrade — hub only
 #=====================
 : "Starting hub cluster upgrade"
 UpgradeCluster "${hubKubeconfig}" "hub"
 WaitForCompleted "${hubKubeconfig}" "hub"
 
-: "Starting spoke cluster upgrade"
-UpgradeCluster "${spokeKubeconfig}" "spoke"
-WaitForCompleted "${spokeKubeconfig}" "spoke"
-
-: "All clusters upgraded to ${targetVersion}"
+: "Hub cluster upgraded to ${targetVersion}"
 true
