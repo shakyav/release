@@ -220,17 +220,17 @@ InstallAndVerifyVirtctl() {
 
     typeset dlURL="https://hyperconverged-cluster-cli-download-openshift-cnv.${baseURL}/amd64/linux/virtctl.tar.gz"
     # No tar -v: keep CI logs smaller (MPEX Section0).
-    if ! curl -kfsSL "${dlURL}" | tar -xzf - -C "${BIN_FOLDER}"; then
+    if ! curl -kfsSL "${dlURL}" | tar -xzf - -C "${binFolder}"; then
         echo "FATAL ERROR: Failed to download and extract virtctl." >&2
         exit 1
     fi
 
     # Handle virtctl in subdirectory (archive may have virtctl-4.x.x/virtctl)
-    if [[ ! -x "${BIN_FOLDER}/virtctl" ]]; then
+    if [[ ! -x "${binFolder}/virtctl" ]]; then
         typeset virtctlPath
-        virtctlPath="$(find "${BIN_FOLDER}" -name virtctl -type f -executable | head -1)"
+        virtctlPath="$(find "${binFolder}" -name virtctl -type f -executable | head -1)"
         if [[ -n "${virtctlPath}" ]]; then
-            mv "${virtctlPath}" "${BIN_FOLDER}/virtctl"
+            mv "${virtctlPath}" "${binFolder}/virtctl"
         fi
     fi
 
@@ -241,12 +241,12 @@ InstallAndVerifyVirtctl() {
     true
 }
 
-typeset BIN_FOLDER
-BIN_FOLDER="$(mktemp -d /tmp/bin.XXXX)"
-typeset OC_URL="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
+typeset binFolder
+binFolder="$(mktemp -d /tmp/bin.XXXX)"
+typeset ocUrl="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
 
 # Exports
-export PATH="${BIN_FOLDER}:${PATH}"
+export PATH="${binFolder}:${PATH}"
 export OPENSHIFT_PYTHON_WRAPPER_LOG_FILE="${ARTIFACT_DIR}/openshift_python_wrapper.log"
 export JUNIT_RESULTS_FILE="${ARTIFACT_DIR}/junit_results.xml"
 export HTML_RESULTS_FILE="${ARTIFACT_DIR}/report.html"
@@ -273,7 +273,7 @@ unset KUBERNETES_PORT_443_TCP_PORT
 
 ###########################################################################
 # Get oc binary
-curl -sL "${OC_URL}" | tar -C "${BIN_FOLDER}" -xzf - oc
+curl -sL "${ocUrl}" | tar -C "${binFolder}" -xzf - oc
 
 if [[ "${CNV_TESTS_UPGRADE_ONLY}" == "true" ]]; then
     if [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]]; then
