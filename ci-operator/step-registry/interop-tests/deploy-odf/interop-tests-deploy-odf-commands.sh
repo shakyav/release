@@ -8,22 +8,11 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 # Collect ODF must-gather on any failure; timeout keeps it inside the ref grace_period.
 trap '
-    saveExit=$?
-    (( saveExit )) &&
+    (($?)) &&
     timeout 8m oc adm must-gather \
         --image="quay.io/rhceph-dev/ocs-must-gather:latest-stable-${ODF_VERSION_MAJOR_MINOR}" \
         --dest-dir="${ARTIFACT_DIR}/ocs_must_gather" || true
 ' EXIT
-
-# WaitMcpForUpdated - waits for all MCPs to finish updating after an ICSP change.
-WaitMcpForUpdated() {
-    # Wait for MCPs to start transitioning (Updated=false). || true handles the case where
-    # the ICSP triggered no node rollout and MCPs remain Updated throughout — that is benign.
-    # The real failure gate is the second oc wait: if MCPs never reach Updated, it fails.
-    oc wait mcp --all --for=condition=Updated=false --timeout=2m || true
-    oc wait mcp --all --for=condition=Updated --timeout=30m
-    true
-}
 
 if [[ "${ODF_DEPLOY_ON_SPOKE}" == "true" ]]; then
     [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]] && {
@@ -77,7 +66,12 @@ EOF
 oc image extract "${odfCatalogImage}" --file /icsp.yaml
 if [[ -e "icsp.yaml" ]]; then
     oc apply --filename="icsp.yaml"
-    WaitMcpForUpdated
+    # Wait for MCPs to start transitioning (Updated=false). || true handles the case where
+    # the ICSP triggered no node rollout and MCPs remain Updated throughout — that is benign.
+    # oc wait --for=condition=Updated resolves immediately if MCPs are already Updated.
+    # The real failure gate is this second oc wait: if MCPs never reach Updated, it fails.
+    oc wait mcp --all --for=condition=Updated=false --timeout=2m || true
+    oc wait mcp --all --for=condition=Updated --timeout=30m
 fi
 
 oc apply -f - <<__EOF__
