@@ -1042,7 +1042,7 @@ VerifyNginxConnectivity() {
     KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
         --image=quay.io/submariner/nettest \
         --restart=Never \
-        -- curl -sS --retry 5 --retry-delay 10 --retry-all-errors \
+        -- curl -sS --retry 5 --retry-delay 10 --retry-connrefused \
         "nginx.default.svc.clusterset.local:8080"
 
     # Poll until the nettest pod completes
