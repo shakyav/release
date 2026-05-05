@@ -286,13 +286,20 @@ DeployBroker() {
 
 #=====================
 # LabelGatewayNode
-#   Labels one worker node on a spoke cluster with submariner.io/gateway=true.
+#   Labels one worker node on a spoke cluster with submariner.io/gateway=true
+#   and taints it NoSchedule to prevent non-Submariner workloads from landing
+#   on the gateway node.
 #
 #   subctl join interactively prompts "Which node should be used as the gateway?"
 #   when no node carries that label. In a non-interactive CI pod, stdin returns
 #   EOF immediately, causing the failure:
 #     ✗ Error getting gateway node: EOF
 #   Pre-labeling a node before calling subctl join suppresses the prompt entirely.
+#
+#   A dedicated gateway MachineSet (as used in some QE setups) is not created here
+#   because spoke nodes are c5n.metal bare-metal instances: provisioning an extra
+#   node would add 20-30 min and exceed CI budget. The taint achieves the same
+#   workload-isolation goal without a new node.
 #
 # Arguments:
 #   $1 - spoke kubeconfig file path
@@ -319,7 +326,9 @@ LabelGatewayNode() {
 
     echo "[INFO] Labeling '${gatewayNode}' as Submariner gateway on '${clusterName}'"
     KUBECONFIG="${kc}" oc label node "${gatewayNode}" submariner.io/gateway=true --overwrite
-    echo "[INFO] Gateway node labeled successfully: ${gatewayNode}"
+    # Taint the gateway node so only Submariner components schedule on it.
+    KUBECONFIG="${kc}" oc adm taint nodes "${gatewayNode}" submariner.io/gateway=true:NoSchedule --overwrite
+    echo "[INFO] Gateway node labeled and tainted successfully: ${gatewayNode}"
     true
 }
 
@@ -1140,38 +1149,31 @@ for ((i = 0; i < spokeCount; i++)); do
     WaitAllSubmarinerComponentsReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done
 
-# Step 7: nginx service-discovery verification
-# Deploy nginx on spoke-2, export the service, curl it from spoke-1.
-# Mirrors the manual ClusterIP verification from the Submariner Globalnet docs.
+# Wait for OpenShift cluster CoreDNS to reload the clusterset.local forwarding
+# rule that subctl join injects into the dns-default ConfigMap. All subsequent
+# DNS-dependent steps — VerifyNginxConnectivity, WaitGlobalnetHeadlessServiceReady,
+# and subctl verify service-discovery tests — depend on this forwarding being live.
+# Without it, *.clusterset.local queries are silently dropped by the cluster CoreDNS
+# even though Lighthouse CoreDNS already holds the records.
+for ((i = 0; i < spokeCount; i++)); do
+    WaitForDnsForwardingConfigured \
+        "${spokeKubeconfigs[i]}" \
+        "${spokeNames[i]}"
+done
+
+# nginx service-discovery verification: deploy nginx on spoke-2, export the
+# service, curl it from spoke-1. Mirrors the ClusterIP verification from the
+# Submariner Globalnet docs.
 VerifyNginxConnectivity \
     "${spokeKubeconfigs[1]}" \
     "${spokeKubeconfigs[0]}" \
     "${spokeNames[1]}" \
     "${spokeNames[0]}"
 
-# Canary: verify that the generic headless service Globalnet DNS path
-# (service.namespace.svc.clusterset.local) works end-to-end before running
-# the full subctl verify suite (31 test specs, 4+ min each on failure).
-#
-# WHY this is needed after WaitAllSubmarinerComponentsReady:
-#   All Submariner pods pass rollout status, but the headless service DNS code
-#   path (Globalnet endpoint → lighthouse-agent propagation → CoreDNS response)
-#   was systematically returning "" for 247-300 s per test across 4 consecutive
-#   runs. StatefulSet pod DNS (different code path) always passed.
-#   The canary either confirms the path works or fails fast with diagnostics from
-#   GlobalIngressIP CRs, ServiceImport state, and lighthouse-agent/coredns logs.
-
-# Step 5a: wait for OpenShift cluster CoreDNS to reload the clusterset.local
-# forwarding rule that subctl join injects. Without this, all dig queries from
-# test pods return "" because the cluster CoreDNS at 172.30.0.10 silently drops
-# *.clusterset.local queries — even though Lighthouse CoreDNS already has the
-# records. This was the root cause of canary failures in runs
-# 2049578693226926080 and 2049703686443110400.
-for ((i = 0; i < spokeCount; i++)); do
-    WaitForDnsForwardingConfigured \
-        "${spokeKubeconfigs[i]}" \
-        "${spokeNames[i]}"
-done
+# Canary: verify the headless service Globalnet DNS path
+# (service.namespace.svc.clusterset.local) end-to-end before the full
+# subctl verify suite. The canary fails fast with diagnostics if the
+# Globalnet endpoint → lighthouse-agent → CoreDNS path is broken.
 for ((i = 0; i < spokeCount - 1; i++)); do
     WaitGlobalnetHeadlessServiceReady \
         "${spokeKubeconfigs[$((i + 1))]}" \
