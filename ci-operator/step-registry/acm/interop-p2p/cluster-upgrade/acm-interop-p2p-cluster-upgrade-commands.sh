@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Upgrades the hub cluster to the latest RC image resolved from ORIGINAL_RELEASE_IMAGE_LATEST.
+# Upgrades the hub cluster to the latest Release Candidate (RC) image resolved from ORIGINAL_RELEASE_IMAGE_LATEST.
 # Patches TARGET_CHANNEL, then initiates and waits for the clusterversion upgrade to complete.
 #
 set -euxo pipefail; shopt -s inherit_errexit
@@ -29,13 +29,15 @@ oc adm upgrade \
 
 # Wait for the upgrade: first confirm targetVersion appears in history, then confirm Completed.
 # Two oc wait calls are needed because oc wait supports only one jsonpath condition each.
+# The first wait guards against a race: immediately after oc adm upgrade, history[0] still
+# reflects the previous upgrade's Completed state. Only once history[0].version matches
+# targetVersion is it safe to poll for Completed.
 oc wait clusterversion/version \
     --for=jsonpath='{.status.history[0].version}'="${targetVersion}" \
-    --timeout="${ACM_UPGRADE_TIMEOUT_SECONDS}s"
+    --timeout="${ACM_UPGRADE_TIMEOUT}"
 
 oc wait clusterversion/version \
     --for=jsonpath='{.status.history[0].state}'="Completed" \
-    --timeout=10m
+    --timeout="${ACM_UPGRADE_TIMEOUT}"
 
-echo "[SUCCESS] Hub cluster upgraded to ${targetVersion}"
-# Cluster health check runs in the next step (cucushift-installer-check-cluster-health).
+true
