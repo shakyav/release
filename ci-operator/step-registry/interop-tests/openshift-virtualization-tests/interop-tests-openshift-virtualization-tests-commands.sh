@@ -149,7 +149,7 @@ function cnv::toggle_common_boot_image_import () {
     local status="${1}"
     retry 5 5 oc patch "${hcoKind}" kubevirt-hyperconverged -n openshift-cnv \
         --type=merge \
-        -p "{\"spec\":{\"enableCommonBootImageImport\": ${status}}}"
+        -p "$(jq -cn --argjson v "${status}" '{"spec":{"enableCommonBootImageImport":$v}}')"
 
     # In some edge cases, the HCO deployment will be scaled down, and not scale up.
     oc scale deployment hco-operator --replicas 1 -n openshift-cnv
