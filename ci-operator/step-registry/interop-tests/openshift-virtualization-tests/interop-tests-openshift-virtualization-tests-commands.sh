@@ -19,23 +19,22 @@ DebugOnExit() {
     set +e
 
     if [[ (${executionTime} -lt ${debugThreshold}) || ${exitCode} -ne 0 ]]; then
-        echo
-        echo "--------------------------------------------------------------------------------"
-        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) "
-        echo "--------------------------------------------------------------------------------"
-        echo "Entering debug sleep. You can now inspect the system state."
-        echo "Remove the file: ${lockfile}, to continue script execution."
-        echo "PID: $$"
-        echo "Exit Code: ${exitCode}"
-        echo "--------------------------------------------------------------------------------"
-        echo "Dump HCO CR and logs for debugging."
+        echo >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) " >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        echo "Entering debug sleep. You can now inspect the system state." >&2
+        echo "Remove the file: ${lockfile}, to continue script execution." >&2
+        echo "PID: $$" >&2
+        echo "Exit Code: ${exitCode}" >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        : "Dump HCO CR and logs for debugging."
         oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
         oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
-        echo "--------------------------------------------------------------------------------"
-        echo "Run must-gather for additional debugging information."
+        : "Run must-gather for additional debugging information."
         RunMustGather
-        echo "--------------------------------------------------------------------------------"
-        echo "    😴 😴 😴"
+        echo "--------------------------------------------------------------------------------" >&2
+        echo "    😴 😴 😴" >&2
 
         # Use file flag so loop can be interrupted by removing the file
         touch "${lockfile}"
@@ -47,7 +46,7 @@ DebugOnExit() {
             sleep "${sleepTime}"
             ((attemptCount++))
             if [[ ${attemptCount} -ge ${attempts} ]]; then
-                echo "Timed out waiting for lockfile to be removed."
+                echo "Timed out waiting for lockfile to be removed." >&2
                 break
             fi
         done
