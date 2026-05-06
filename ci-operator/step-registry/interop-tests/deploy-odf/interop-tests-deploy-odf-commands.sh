@@ -24,7 +24,7 @@ fi
 
 # ODF_OPERATOR_CHANNEL, ODF_SUBSCRIPTION_NAME, ODF_VOLUME_SIZE, ODF_BACKEND_STORAGE_CLASS
 # are Step Input Env Vars (ref.yaml) guaranteed by CI Operator — no local shadow vars needed.
-typeset odfInstallNamespace="openshift-storage"
+typeset -r odfInstallNamespace="openshift-storage"
 
 typeset -r odfCatalogImage="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_VERSION_MAJOR_MINOR}"
 typeset -r odfCatalogName="odf-catalogsource"
@@ -51,7 +51,9 @@ pushd /tmp
 oc create namespace "${odfInstallNamespace}" --dry-run=client -o yaml | oc apply -f -
 
 # Deploy operator group.
-oc apply -f - <<EOF
+{
+    oc create -f - --dry-run=client -o yaml --save-config
+} 0<<ocEOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
@@ -60,7 +62,7 @@ metadata:
 spec:
   targetNamespaces:
   - "${odfInstallNamespace}"
-EOF
+ocEOF
 
 # Extract ICSP from the catalog image; apply if present, then wait for MCP update.
 oc image extract "${odfCatalogImage}" --file /icsp.yaml
@@ -74,7 +76,9 @@ if [[ -e "icsp.yaml" ]]; then
     oc wait mcp --all --for=condition=Updated --timeout=30m
 fi
 
-oc apply -f - <<__EOF__
+{
+    oc create -f - --dry-run=client -o yaml --save-config
+} 0<<ocEOF | oc apply -f -
 kind: CatalogSource
 apiVersion: operators.coreos.com/v1alpha1
 metadata:
@@ -88,7 +92,7 @@ spec:
   image: ${odfCatalogImage}
   publisher: Red Hat
   sourceType: grpc
-__EOF__
+ocEOF
 
 oc wait "catalogSource/${odfCatalogName}" -n openshift-marketplace \
     --for=jsonpath='{.status.connectionState.lastObservedState}=READY' --timeout='10m'
@@ -98,7 +102,9 @@ oc label "CatalogSource/${odfCatalogName}" -n openshift-marketplace ocs-operator
 
 typeset subscriptionName=''
 subscriptionName="$(
-    cat <<EOF | oc apply -f - -o jsonpath='{.metadata.name}'
+    {
+        oc create -f - --dry-run=client -o yaml --save-config
+    } 0<<ocEOF | oc apply -f - -o jsonpath='{.metadata.name}'
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -110,7 +116,7 @@ spec:
   name: ${ODF_SUBSCRIPTION_NAME}
   source: ${odfCatalogName}
   sourceNamespace: openshift-marketplace
-EOF
+ocEOF
 )"
 
 # Poll for installedCSV (20 min): 'oc wait' cannot test for a non-empty value, and the CSV
@@ -120,13 +126,15 @@ EOF
 # created; suppresses transient noise without masking real failures.
 typeset csvName=''
 typeset -i csvDeadline
-csvDeadline=$(( $(date +%s) + 1200 ))
+typeset -i tNow; tNow=$(date +%s)
+(( csvDeadline = tNow + 1200 ))
 until [[ -n "${csvName}" ]]; do
     csvName="$(oc -n "${odfInstallNamespace}" \
         get subscriptions.operators.coreos.com "${subscriptionName}" \
         -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
     if [[ -z "${csvName}" ]]; then
-        if (( $(date +%s) >= csvDeadline )); then
+        tNow=$(date +%s)
+        if (( tNow >= csvDeadline )); then
             echo "[ERROR] Timed out (20m) waiting for subscription '${subscriptionName}' to install CSV" >&2
             # Dump state for diagnostics before exiting.
             oc -n "${odfInstallNamespace}" get subscriptions.operators.coreos.com "${subscriptionName}" -o yaml >&2 || true
@@ -137,14 +145,13 @@ until [[ -n "${csvName}" ]]; do
         sleep 10
     fi
 done
-echo "[INFO] OLM installed CSV: ${csvName}"
+: "OLM installed CSV: ${csvName}"
 
 # Wait for storageclusters.ocs.openshift.io CRD: poll until the object exists (phase 1),
 # then oc wait for Established (phase 2) — oc wait requires the object to already exist.
 typeset -i crdWait=0
 typeset -i crdMax=300   # 5 minutes
-echo "[INFO] Waiting for CRD storageclusters.ocs.openshift.io to be registered (timeout=${crdMax}s)"
-until oc get crd storageclusters.ocs.openshift.io &>/dev/null 2>&1; do
+until oc get crd storageclusters.ocs.openshift.io &>/dev/null; do
     if (( crdWait >= crdMax )); then
         echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after ${crdMax}s" >&2
         echo "[DEBUG] OCS/ODF CRDs currently registered:" >&2
@@ -155,24 +162,36 @@ until oc get crd storageclusters.ocs.openshift.io &>/dev/null 2>&1; do
         oc -n "${odfInstallNamespace}" get pods -o wide 2>&1 || true
         exit 1
     fi
-    echo "[INFO]   CRD not yet registered (${crdWait}/${crdMax}s elapsed)"
+    : "  CRD not yet registered (${crdWait}/${crdMax}s elapsed)"
     sleep 10
     (( crdWait += 10 ))
 done
-echo "[INFO] CRD storageclusters.ocs.openshift.io registered after ${crdWait}s — waiting for Established"
+: "CRD storageclusters.ocs.openshift.io registered after ${crdWait}s — waiting for Established"
 oc wait crd storageclusters.ocs.openshift.io \
     --for=condition='Established' \
     --timeout='2m'
 
+# Wait for the OCS operator deployment to be ready before creating the StorageCluster.
+# The CRD being Established happens before the operator pod reaches Available; on bare metal
+# nodes this gap can be significant. Creating the StorageCluster while the operator is still
+# initializing produces partial DaemonSet specs that leave CSI node plugin pods permanently
+# stuck in ContainerCreating — which was the root cause of the 180m StorageCluster timeout.
+oc wait deployment/ocs-operator \
+    -n "${odfInstallNamespace}" \
+    --for=condition='Available' \
+    --timeout='10m'
+
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
 
-cat <<EOF | oc apply -f -
+{
+    oc create -f - --dry-run=client -o yaml --save-config
+} 0<<ocEOF | oc apply -f -
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
 metadata:
   name: ${ODF_STORAGE_CLUSTER_NAME}
-  namespace: openshift-storage
+  namespace: ${odfInstallNamespace}
 spec:
   storageDeviceSets:
   - count: 1
@@ -190,10 +209,70 @@ spec:
     portable: true
     replica: 3
     resources: {}
-EOF
+ocEOF
 
-oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
-    -n "${odfInstallNamespace}" --for=condition='Available' --timeout='180m'
+# Wait for the Ceph RBD CSI node plugin DaemonSet to roll out on all ODF-labeled nodes
+# before relying on the StorageCluster Available condition. A CSI node plugin pod stuck in
+# ContainerCreating will block Ceph OSD join → NooBaa PVC provisioning → StorageCluster
+# Available, but only surfaces as a timeout 180 minutes later. Catching it here fails fast
+# with actionable output.
+typeset rbdDs=""
+typeset -i rbdWait=0
+typeset -i rbdMax=1800
+until [[ -n "${rbdDs}" ]]; do
+    rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
+        -o jsonpath='{.items[?(@.spec.selector.matchLabels.app=="rook-ceph-csi")].metadata.name}' \
+        2>/dev/null || true)"
+    # Fallback: match any DaemonSet whose name contains 'rbd' and 'plugin'
+    if [[ -z "${rbdDs}" ]]; then
+        rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
+            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+            | tr ' ' '\n' | grep -m1 'rbd.*plugin\|rbdplugin' 2>/dev/null || true)"
+    fi
+    if [[ -z "${rbdDs}" ]]; then
+        if (( rbdWait >= rbdMax )); then
+            echo "[ERROR] Ceph RBD CSI DaemonSet not found in ${odfInstallNamespace} after ${rbdMax}s" >&2
+            oc -n "${odfInstallNamespace}" get daemonset -o wide >&2 || true
+            oc -n "${odfInstallNamespace}" get pods -o wide >&2 || true
+            exit 1
+        fi
+        sleep 15
+        (( rbdWait += 15 ))
+    fi
+done
+: "Found Ceph RBD CSI DaemonSet: ${rbdDs} (after ${rbdWait}s)"
+if ! oc rollout status "daemonset/${rbdDs}" \
+        -n "${odfInstallNamespace}" \
+        --timeout=30m; then
+    echo "[ERROR] Ceph RBD CSI DaemonSet '${rbdDs}' did not roll out cleanly" >&2
+    echo "[DEBUG] DaemonSet pod status:" >&2
+    oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
+    oc -n "${odfInstallNamespace}" get pods \
+        -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
+        2>/dev/null | grep -i plugin >&2 || true
+    echo "[DEBUG] Describe first non-Running CSI pod:" >&2
+    oc -n "${odfInstallNamespace}" get pods --no-headers \
+        -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
+        2>/dev/null | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
+        | xargs -r oc -n "${odfInstallNamespace}" describe pod >&2 || true
+    exit 1
+fi
+
+typeset -r scTimeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT:-240m}"
+if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
+        -n "${odfInstallNamespace}" --for=condition='Available' --timeout="${scTimeout}"; then
+    echo "[ERROR] StorageCluster '${ODF_STORAGE_CLUSTER_NAME}' did not reach Available within ${scTimeout}" >&2
+    echo "[DEBUG] StorageCluster conditions:" >&2
+    oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
+        -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' >&2 || true
+    echo "[DEBUG] Non-Running pods in openshift-storage:" >&2
+    oc -n "${odfInstallNamespace}" get pods \
+        --field-selector='status.phase!=Running' -o wide >&2 || true
+    echo "[DEBUG] Pending PVCs:" >&2
+    oc -n "${odfInstallNamespace}" get pvc \
+        --field-selector='status.phase!=Bound' -o wide >&2 || true
+    exit 1
+fi
 
 oc get sc -o name | xargs -I{} oc annotate {} storageclass.kubernetes.io/is-default-class-
 # StorageClass name is derived from ODF_STORAGE_CLUSTER_NAME.

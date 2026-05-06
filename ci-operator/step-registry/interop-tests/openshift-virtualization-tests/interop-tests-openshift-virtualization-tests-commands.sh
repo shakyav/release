@@ -19,23 +19,22 @@ DebugOnExit() {
     set +e
 
     if [[ (${executionTime} -lt ${debugThreshold}) || ${exitCode} -ne 0 ]]; then
-        echo
-        echo "--------------------------------------------------------------------------------"
-        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) "
-        echo "--------------------------------------------------------------------------------"
-        echo "Entering debug sleep. You can now inspect the system state."
-        echo "Remove the file: ${lockfile}, to continue script execution."
-        echo "PID: $$"
-        echo "Exit Code: ${exitCode}"
-        echo "--------------------------------------------------------------------------------"
-        echo "Dump HCO CR and logs for debugging."
+        echo >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) " >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        echo "Entering debug sleep. You can now inspect the system state." >&2
+        echo "Remove the file: ${lockfile}, to continue script execution." >&2
+        echo "PID: $$" >&2
+        echo "Exit Code: ${exitCode}" >&2
+        echo "--------------------------------------------------------------------------------" >&2
+        : "Dump HCO CR and logs for debugging."
         oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
         oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
-        echo "--------------------------------------------------------------------------------"
-        echo "Run must-gather for additional debugging information."
+        : "Run must-gather for additional debugging information."
         RunMustGather
-        echo "--------------------------------------------------------------------------------"
-        echo "    😴 😴 😴"
+        echo "--------------------------------------------------------------------------------" >&2
+        echo "    😴 😴 😴" >&2
 
         # Use file flag so loop can be interrupted by removing the file
         touch "${lockfile}"
@@ -47,7 +46,7 @@ DebugOnExit() {
             sleep "${sleepTime}"
             ((attemptCount++))
             if [[ ${attemptCount} -ge ${attempts} ]]; then
-                echo "Timed out waiting for lockfile to be removed."
+                echo "Timed out waiting for lockfile to be removed." >&2
                 break
             fi
         done
@@ -124,8 +123,10 @@ Retry() {
         lastExitCode=$?
         count=$((count + 1))
         if (( count < maxRetries )); then
+            : "Command failed. Attempt ${count}/${maxRetries}. Retrying in ${delay} seconds..."
             sleep "${delay}"
         else
+            : "Command failed after ${maxRetries} attempts."
             return "${lastExitCode}"
         fi
     done
@@ -179,9 +180,13 @@ Cnv__ReimportDatavolumes() {
     typeset -i snapshotDeleteTimeoutSec=30
     typeset vsName vscName
     while (( retryCount < maxRetries )); do
+        : "Attempting to delete all volumesnapshots in namespace ${dvnamespace} (Attempt $((retryCount + 1)) of ${maxRetries})..."
+
         if oc delete volumesnapshots -n "${dvnamespace}" --selector=cdi.kubevirt.io/dataImportCron --timeout="${snapshotDeleteTimeoutSec}s" --ignore-not-found; then
+            : "Successfully deleted all volumesnapshots"
             break
         else
+            echo "Failed to delete some volumesnapshots. Trying to send dummy annotation to all dangling volumesnapshots" >&2
             retryCount=$((retryCount + 1))
 
             # send dummy-annotation so the CSI-sidecar will send a DeleteSnapshot RPC
