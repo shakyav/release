@@ -43,22 +43,22 @@ fi
 
 # Diagnostics only: listing hub spokes can differ from file list (e.g. API already cleared)
 typeset managed_cluster_json
-managed_cluster_json="$(oc get managedcluster -o json 2>/dev/null || echo '{"items":[]}')"
+managed_cluster_json="$(oc get managedcluster -o json || echo '{"items":[]}')"
 typeset -a all_spokes=()
 mapfile -t all_spokes < <(echo "${managed_cluster_json}" | jq -r '.items[]? | select(.metadata.name!="local-cluster") | .metadata.name')
 if [[ ${#all_spokes[@]} -gt 0 ]]; then
     echo "[INFO] Spoke ManagedClusters currently registered on hub: ${all_spokes[*]}"
 fi
 
-timeout_minutes="60"  # Default deprovisioning timeout per cluster
-poll_seconds="10"     # Polling interval for checks
-force_delete_mc="false"
+typeset timeout_minutes="60"
+typeset poll_seconds="10"
+typeset force_delete_mc="false"
 
 #=====================
 # Helper functions
 #=====================
 Need() {
-    command -v "$1" >/dev/null 2>&1 || {
+    command -v "$1" 1>/dev/null || {
         echo "[FATAL] '$1' not found" >&2
         exit 1
     }
@@ -68,7 +68,7 @@ Need() {
 PickLatestDeprovName() {
     typeset namespace="$1"
     typeset deprov_json
-    deprov_json="$(oc -n "${namespace}" get clusterdeprovisions -o json 2>/dev/null || echo '{"items":[]}')"
+    deprov_json="$(oc -n "${namespace}" get clusterdeprovisions -o json || echo '{"items":[]}')"
     echo "${deprov_json}" | jq -r '.items | sort_by(.metadata.creationTimestamp) | last? | .metadata.name // ""'
 }
 
@@ -82,7 +82,7 @@ UninstallCluster() {
     echo "[INFO] Uninstalling cluster '${cluster_name}' in namespace '${namespace}'"
 
     # Check if namespace exists
-    if ! oc get ns "${namespace}" >/dev/null 2>&1; then
+    if ! oc get ns "${namespace}" 1>/dev/null; then
         echo "[WARN] Namespace '${namespace}' not found; cluster may already be removed. Cleaning up cluster-scoped resources if they remain." >&2
         oc delete managedcluster "${cluster_name}" --ignore-not-found=true
         typeset mc_set_orphan="${cluster_name}-set"
@@ -92,7 +92,7 @@ UninstallCluster() {
 
     # Detach from ACM (ManagedCluster) and clean up Klusterlet config
     echo "[INFO] Detaching from ACM (ManagedCluster) and cleaning up Klusterlet config for '${cluster_name}'"
-    if oc get managedcluster "${cluster_name}" >/dev/null 2>&1; then
+    if oc get managedcluster "${cluster_name}" 1>/dev/null; then
         echo "[INFO] Deleting ManagedCluster '${cluster_name}' from ACM (this is the primary deletion step)"
         if [[ "${force_delete_mc}" == "true" ]]; then
             echo "[WARN] Force deleting ManagedCluster finalizers (if any)"
@@ -103,7 +103,7 @@ UninstallCluster() {
         echo "[INFO] ManagedCluster '${cluster_name}' not present (already removed)"
     fi
 
-    if oc -n "${namespace}" get klusterletaddonconfig "${cluster_name}" >/dev/null 2>&1; then
+    if oc -n "${namespace}" get klusterletaddonconfig "${cluster_name}" 1>/dev/null; then
         echo "[INFO] Deleting KlusterletAddonConfig '${cluster_name}'"
         oc -n "${namespace}" delete klusterletaddonconfig "${cluster_name}" --ignore-not-found=true
     fi
@@ -111,7 +111,7 @@ UninstallCluster() {
     # Ensure ClusterDeployment triggers infrastructure deprovisioning
     echo "[INFO] Ensuring ClusterDeployment triggers infrastructure deprovisioning for '${cluster_name}'"
     typeset deprov_name=""
-    if oc -n "${namespace}" get clusterdeployment "${cluster_name}" >/dev/null 2>&1; then
+    if oc -n "${namespace}" get clusterdeployment "${cluster_name}" 1>/dev/null; then
         echo "[INFO] Patching ClusterDeployment '${cluster_name}' to ensure preserveOnDelete=false"
         oc -n "${namespace}" patch clusterdeployment "${cluster_name}" --type=merge -p '{"spec":{"preserveOnDelete":false}}'
         echo "[INFO] Deleting ClusterDeployment '${cluster_name}' to initiate deprovisioning"
@@ -161,13 +161,13 @@ UninstallCluster() {
 
     # Remove binding before ManagedClusterSet (install creates ManagedClusterSetBinding in namespace)
     typeset mc_set_name="${cluster_name}-set"
-    if oc -n "${namespace}" get managedclustersetbinding "${mc_set_name}" >/dev/null 2>&1; then
+    if oc -n "${namespace}" get managedclustersetbinding "${mc_set_name}" 1>/dev/null; then
         echo "[INFO] Deleting ManagedClusterSetBinding '${mc_set_name}' in namespace '${namespace}'"
         oc -n "${namespace}" delete managedclustersetbinding "${mc_set_name}" --ignore-not-found=true --wait=false
     fi
 
     # Delete ManagedClusterSet (cluster-scoped, created per cluster)
-    if oc get managedclusterset "${mc_set_name}" >/dev/null 2>&1; then
+    if oc get managedclusterset "${mc_set_name}" 1>/dev/null; then
         echo "[INFO] Deleting ManagedClusterSet '${mc_set_name}'"
         oc delete managedclusterset "${mc_set_name}" --ignore-not-found=true
     fi

@@ -112,7 +112,7 @@ echo "[INFO] Lease validation passed: ${ACM_SPOKE_CLUSTER_COUNT} cluster(s) with
 #   $1 - Command name to check
 # Exits with error if command is not found
 Need() {
-    command -v "$1" >/dev/null 2>&1 || {
+    command -v "$1" 1>/dev/null || {
         echo "[FATAL] '$1' not found" >&2
         exit 1
     }
@@ -178,7 +178,7 @@ if [[ -z "${cluster_imageset_name}" ]]; then
 fi
 
 # Double-check that the ClusterImageSet resource exists
-if ! oc get clusterimageset "${cluster_imageset_name}" &>/dev/null; then
+if ! oc get clusterimageset "${cluster_imageset_name}" 1>/dev/null; then
     echo "[ERROR] ClusterImageSet '${cluster_imageset_name}' not found or not accessible" >&2
     exit 1
 fi
@@ -189,7 +189,7 @@ echo "[INFO] Using cluster image set: ${cluster_imageset_name}"
 typeset ocp_release_image
 ocp_release_image="$(
     oc get clusterimageset "${cluster_imageset_name}" \
-        -o jsonpath='{.spec.releaseImage}' 2>/dev/null || echo ""
+        -o jsonpath='{.spec.releaseImage}' || echo ""
 )"
 
 if [[ -n "${ocp_release_image}" ]]; then
@@ -288,26 +288,41 @@ CreateClusterResources() {
     # Create ManagedClusterSet to group this cluster
     # ManagedClusterSet is a cluster-scoped resource (no namespace)
     echo "[INFO] Creating ManagedClusterSet '${cluster_name}-set'"
-    oc create -f - --dry-run=client -o yaml --save-config <<EOF | oc apply -f -
+    {
+        oc create -f - --dry-run=client -o json --save-config |
+        jq -c --arg name "${cluster_name}-set" '
+            .metadata.name = $name
+        '
+    } 0<<'ocEOF' | oc apply -f -
 apiVersion: cluster.open-cluster-management.io/v1beta2
 kind: ManagedClusterSet
 metadata:
-  name: ${cluster_name}-set
+  name: placeholder
 spec: {}
-EOF
+ocEOF
 
     # Bind the ManagedClusterSet to the cluster's namespace
     # This allows the namespace to use the cluster set
     echo "[INFO] Creating ManagedClusterSetBinding '${cluster_name}-set'"
-    oc create -f - --dry-run=client -o yaml --save-config <<EOF | oc apply -f -
+    {
+        oc create -f - --dry-run=client -o json --save-config |
+        jq -c \
+            --arg name "${cluster_name}-set" \
+            --arg ns   "${cluster_name}" \
+            '
+            .metadata.name      = $name |
+            .metadata.namespace = $ns   |
+            .spec.clusterSet    = $name
+            '
+    } 0<<'ocEOF' | oc apply -f -
 apiVersion: cluster.open-cluster-management.io/v1beta2
 kind: ManagedClusterSetBinding
 metadata:
-  name: ${cluster_name}-set
-  namespace: ${cluster_name}
+  name: placeholder
+  namespace: placeholder
 spec:
-  clusterSet: ${cluster_name}-set
-EOF
+  clusterSet: placeholder
+ocEOF
 
     # Create AWS credentials secret from cluster profile
     # Uses process substitution to avoid exposing credentials in logs
@@ -366,29 +381,56 @@ EOF
     echo "[INFO] Creating install-config for region '${cluster_region}'"
     typeset install_config_file="/tmp/install-config-${cluster_name}.yaml"
 
-    cat > "${install_config_file}" <<EOF
+    {
+        oc create -f - --dry-run=client -o json |
+        jq -c \
+            --arg name     "${cluster_name}" \
+            --arg domain   "${BASE_DOMAIN}" \
+            --arg arch     "${ACM_SPOKE_ARCH_TYPE}" \
+            --arg cpType   "${ACM_SPOKE_CP_TYPE}" \
+            --argjson cpR  "${ACM_SPOKE_CP_REPLICAS}" \
+            --arg wkType   "${ACM_SPOKE_WORKER_TYPE}" \
+            --argjson wkR  "${ACM_SPOKE_WORKER_REPLICAS}" \
+            --arg netType  "${ACM_SPOKE_NETWORK_TYPE}" \
+            --arg region   "${cluster_region}" \
+            --arg sshKey   "$(<"${CLUSTER_PROFILE_DIR}/ssh-publickey")" \
+            '
+            .metadata.name                              = $name   |
+            .baseDomain                                 = $domain |
+            .controlPlane.architecture                  = $arch   |
+            .controlPlane.platform.aws.type             = $cpType |
+            .controlPlane.replicas                      = $cpR    |
+            .compute[0].architecture                    = $arch   |
+            .compute[0].platform.aws.type               = $wkType |
+            .compute[0].replicas                        = $wkR    |
+            .networking.networkType                     = $netType|
+            .platform.aws.region                        = $region |
+            .sshKey                                     = $sshKey
+            ' |
+        yq -p json -o yaml eval .
+    } 0<<'ocEOF' > "${install_config_file}"
 apiVersion: v1
 metadata:
-  name: ${cluster_name}
-baseDomain: ${BASE_DOMAIN}
+  name: placeholder
+baseDomain: placeholder
 controlPlane:
-  architecture: ${ACM_SPOKE_ARCH_TYPE}
+  architecture: placeholder
   hyperthreading: Enabled
   name: master
-  replicas: ${ACM_SPOKE_CP_REPLICAS}
+  replicas: 3
   platform:
     aws:
-      type: ${ACM_SPOKE_CP_TYPE}
+      type: placeholder
 compute:
 - hyperthreading: Enabled
-  architecture: ${ACM_SPOKE_ARCH_TYPE}
+  architecture: placeholder
   name: 'worker'
-  replicas: ${ACM_SPOKE_WORKER_REPLICAS}
+  replicas: 3
   platform:
     aws:
-      type: ${ACM_SPOKE_WORKER_TYPE}
+      type: placeholder
 networking:
-  networkType: ${ACM_SPOKE_NETWORK_TYPE}
+  networkType: placeholder
   clusterNetwork:
   - cidr: 10.128.0.0/14
     hostPrefix: 23
@@ -398,10 +440,9 @@ networking:
   - 172.30.0.0/16
 platform:
   aws:
-    region: ${cluster_region}
-sshKey: |-
-  $(<"${CLUSTER_PROFILE_DIR}/ssh-publickey")
-EOF
+    region: placeholder
+sshKey: placeholder
+ocEOF
 
     # Store install-config as a secret for Hive to consume
     echo "[INFO] Creating install-config secret"
@@ -416,25 +457,44 @@ EOF
     echo "[INFO] Creating ClusterDeployment '${cluster_name}' in region '${cluster_region}'"
     typeset cluster_deployment_file="/tmp/clusterdeployment-${cluster_name}.yaml"
 
-    cat > "${cluster_deployment_file}" <<EOF
+    {
+        oc create -f - --dry-run=client -o json |
+        jq -c \
+            --arg name       "${cluster_name}" \
+            --arg region     "${cluster_region}" \
+            --arg domain     "${BASE_DOMAIN}" \
+            --arg clusterSet "${cluster_name}-set" \
+            --arg imageSet   "${cluster_imageset_name}" \
+            '
+            .metadata.name                                         = $name      |
+            .metadata.namespace                                    = $name      |
+            .metadata.labels.region                                = $region    |
+            .metadata.labels["cluster.open-cluster-management.io/clusterset"] = $clusterSet |
+            .spec.baseDomain                                       = $domain    |
+            .spec.clusterName                                      = $name      |
+            .spec.platform.aws.region                              = $region    |
+            .spec.provisioning.imageSetRef.name                    = $imageSet
+            ' |
+        yq -p json -o yaml eval .
+    } 0<<'ocEOF' > "${cluster_deployment_file}"
 apiVersion: hive.openshift.io/v1
 kind: ClusterDeployment
 metadata:
-  name: ${cluster_name}
-  namespace: ${cluster_name}
+  name: placeholder
+  namespace: placeholder
   labels:
     cloud: 'AWS'
-    region: '${cluster_region}'
+    region: placeholder
     vendor: OpenShift
-    cluster.open-cluster-management.io/clusterset: '${cluster_name}-set'
+    cluster.open-cluster-management.io/clusterset: placeholder
 spec:
-  baseDomain: ${BASE_DOMAIN}
-  clusterName: ${cluster_name}
+  baseDomain: placeholder
+  clusterName: placeholder
   controlPlaneConfig:
     servingCertificates: {}
   platform:
     aws:
-      region: ${cluster_region}
+      region: placeholder
       credentialsSecretRef:
         name: acm-aws-secret
   pullSecretRef:
@@ -444,10 +504,10 @@ spec:
     installConfigSecretRef:
       name: install-config
     imageSetRef:
-      name: ${cluster_imageset_name}
+      name: placeholder
     sshPrivateKeyRef:
       name: ssh-private-key
-EOF
+ocEOF
 
     oc apply -f "${cluster_deployment_file}"
 
@@ -456,20 +516,33 @@ EOF
     echo "[INFO] Creating ManagedCluster '${cluster_name}'"
     typeset managed_cluster_file="/tmp/managed_cluster-${cluster_name}.yaml"
 
-    cat > "${managed_cluster_file}" <<EOF
+    {
+        oc create -f - --dry-run=client -o json |
+        jq -c \
+            --arg name       "${cluster_name}" \
+            --arg region     "${cluster_region}" \
+            --arg clusterSet "${cluster_name}-set" \
+            '
+            .metadata.name                                         = $name      |
+            .metadata.labels.name                                  = $name      |
+            .metadata.labels.region                                = $region    |
+            .metadata.labels["cluster.open-cluster-management.io/clusterset"] = $clusterSet
+            ' |
+        yq -p json -o yaml eval .
+    } 0<<'ocEOF' > "${managed_cluster_file}"
 apiVersion: cluster.open-cluster-management.io/v1
 kind: ManagedCluster
 metadata:
-  name: ${cluster_name}
+  name: placeholder
   labels:
-    name: ${cluster_name}
+    name: placeholder
     cloud: Amazon
-    region: ${cluster_region}
+    region: placeholder
     vendor: OpenShift
-    cluster.open-cluster-management.io/clusterset: ${cluster_name}-set
+    cluster.open-cluster-management.io/clusterset: placeholder
 spec:
   hubAcceptsClient: true
-EOF
+ocEOF
 
     oc apply -f "${managed_cluster_file}"
 
@@ -478,15 +551,26 @@ EOF
     echo "[INFO] Creating KlusterletAddonConfig '${cluster_name}'"
     typeset klusterlet_addon_config_file="/tmp/klusterletaddonconfig-${cluster_name}.yaml"
 
-    cat > "${klusterlet_addon_config_file}" <<EOF
+    {
+        oc create -f - --dry-run=client -o json |
+        jq -c \
+            --arg name "${cluster_name}" \
+            '
+            .metadata.name      = $name |
+            .metadata.namespace = $name |
+            .spec.clusterName      = $name |
+            .spec.clusterNamespace = $name
+            ' |
+        yq -p json -o yaml eval .
+    } 0<<'ocEOF' > "${klusterlet_addon_config_file}"
 apiVersion: agent.open-cluster-management.io/v1
 kind: KlusterletAddonConfig
 metadata:
-  name: ${cluster_name}
-  namespace: ${cluster_name}
+  name: placeholder
+  namespace: placeholder
 spec:
-  clusterName: ${cluster_name}
-  clusterNamespace: ${cluster_name}
+  clusterName: placeholder
+  clusterNamespace: placeholder
   clusterLabels:
     cloud: Amazon
     vendor: OpenShift
@@ -498,7 +582,7 @@ spec:
     enabled: true
   certPolicyController:
     enabled: true
-EOF
+ocEOF
 
     oc apply -f "${klusterlet_addon_config_file}"
 
@@ -532,7 +616,7 @@ WaitForClusterProvisioned() {
     typeset cd_json provisioned stop_reason stop_message elapsed
 
     while true; do
-        cd_json="$(JsonGet "${cluster_name}" clusterdeployment "${cluster_name}" 2>/dev/null)" || {
+        cd_json="$(JsonGet "${cluster_name}" clusterdeployment "${cluster_name}")" || {
             echo "[WARN] Failed to fetch ClusterDeployment '${cluster_name}', will retry..." >&2
             sleep "${poll_interval}"
             continue
@@ -635,7 +719,7 @@ ExtractClusterCredentials() {
     if [[ -z "${metadata_secret}" ]]; then
         echo "[WARN] metadataJSONSecretRef is not set for ${cluster_name}; metadata.json may not exist"
     else
-        if oc -n "${cluster_name}" get secret "${metadata_secret}" >/dev/null 2>&1; then
+        if oc -n "${cluster_name}" get secret "${metadata_secret}" 1>/dev/null; then
             typeset metadata_file="${SHARED_DIR}/managed-cluster-metadata-${cluster_idx}.json"
             oc -n "${cluster_name}" get secret "${metadata_secret}" \
                 -o jsonpath='{.data.metadata\.json}' | base64 -d \
@@ -709,3 +793,4 @@ echo "[INFO] Cluster names file: ${SHARED_DIR}/managed-cluster-names"
 echo "[INFO] Cluster regions file: ${SHARED_DIR}/managed-cluster-regions"
 echo "[INFO] Individual cluster name files: ${SHARED_DIR}/managed-cluster-name-1 .. managed-cluster-name-${ACM_SPOKE_CLUSTER_COUNT}"
 echo "[INFO] Kubeconfig files: ${SHARED_DIR}/managed-cluster-kubeconfig-1 .. managed-cluster-kubeconfig-${ACM_SPOKE_CLUSTER_COUNT}"
+true

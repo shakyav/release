@@ -13,7 +13,7 @@
 # Requires: subctl binary in SHARED_DIR (written by submariner-cloud-prepare)
 #
 
-set -euo pipefail; shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
 #=====================
 # Constants
@@ -26,7 +26,7 @@ typeset -r brokerInfoFile="/tmp/broker-info.subm"
 # CleanupBrokerInfo — remove broker credentials file on EXIT
 #=====================
 CleanupBrokerInfo() {
-    rm -f "${brokerInfoFile}" 2>/dev/null || true
+    rm -f "${brokerInfoFile}" || true
 }
 trap CleanupBrokerInfo EXIT
 
@@ -34,7 +34,7 @@ trap CleanupBrokerInfo EXIT
 # Need — assert a command exists
 #=====================
 Need() {
-    command -v "$1" >/dev/null 2>&1 || {
+    command -v "$1" 1>/dev/null || {
         echo "[FATAL] '$1' not found in PATH" >&2
         exit 1
     }
@@ -148,7 +148,7 @@ WaitForDnsForwardingConfigured() {
     while (( dnsWait < dnsMax )); do
         if KUBECONFIG="${kubeconfig}" oc get configmap dns-default \
                 -n openshift-dns \
-                -o jsonpath='{.data.Corefile}' 2>/dev/null \
+                -o jsonpath='{.data.Corefile}' \
                 | grep -q 'clusterset.local'; then
             echo "[INFO] Lighthouse DNS stub zone found in dns-default on spoke '${spokeName}' after ${dnsWait}s"
             break

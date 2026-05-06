@@ -13,7 +13,7 @@
 # Requires: subctl and yq binaries in SHARED_DIR (written by submariner-cloud-prepare)
 #
 
-set -euo pipefail; shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
 #=====================
 # Constants
@@ -26,7 +26,7 @@ typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 # Need — assert a command exists
 #=====================
 Need() {
-    command -v "$1" >/dev/null 2>&1 || {
+    command -v "$1" 1>/dev/null || {
         echo "[FATAL] '$1' not found in PATH" >&2
         exit 1
     }
@@ -127,7 +127,7 @@ EOF
     typeset -i siMax=180
     echo "[INFO] Waiting for ServiceImport 'nginx' on '${targetCluster}' (timeout=${siMax}s)"
     while (( siWait < siMax )); do
-        if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default &>/dev/null 2>&1; then
+        if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null; then
             echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s"
             break
         fi
@@ -157,7 +157,7 @@ EOF
             KUBECONFIG="${kcSource}" oc get globalingressips \
                 -n default \
                 -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' \
-                2>/dev/null || true
+                || true
         )"
         if [[ -n "${giIP}" ]]; then
             echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)"
@@ -179,7 +179,7 @@ EOF
 
     # Clean up any previous nettest pod before running the curl
     KUBECONFIG="${kcTarget}" oc -n default delete pod submariner-nettest \
-        --ignore-not-found --grace-period=0 2>/dev/null || true
+        --ignore-not-found --grace-period=0 || true
 
     echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local"
     KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
@@ -199,7 +199,7 @@ EOF
     typeset exitCode
     exitCode="$(
         KUBECONFIG="${kcTarget}" oc -n default get pod submariner-nettest \
-            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo ""
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' || echo ""
     )"
     if [[ "${exitCode}" != "0" ]]; then
         echo "[ERROR] nettest curl failed (exitCode=${exitCode}) on '${targetCluster}'" >&2
@@ -229,11 +229,12 @@ WaitGlobalnetHeadlessServiceReady() {
         count="$(
             KUBECONFIG="${kubeconfig}" oc get globalingressips \
                 -n default \
-                --no-headers 2>/dev/null | wc -l || echo "0"
+                -o jsonpath-as-json='{.items}' |
+                jq 'length' || echo "0"
         )"
         if (( count > 0 )); then
             echo "[INFO] ${count} GlobalIngressIP(s) found on '${clusterName}' after ${wait}s"
-            KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide 2>/dev/null || true
+            KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide || true
             break
         fi
         echo "[INFO]   No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)"

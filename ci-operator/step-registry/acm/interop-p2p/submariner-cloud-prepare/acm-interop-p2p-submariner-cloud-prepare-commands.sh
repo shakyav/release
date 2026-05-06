@@ -12,7 +12,7 @@
 # They are never written to SHARED_DIR.
 #
 
-set -euo pipefail; shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
 #=====================
 # Constants
@@ -32,7 +32,7 @@ typeset awsTmpCreds=""
 CleanupCredentials() {
     set +x
     [[ -n "${awsTmpCreds}" && -f "${awsTmpCreds}" ]] && rm -f "${awsTmpCreds}"
-    rm -f "${HOME}/.aws/credentials" "${HOME}/.aws/config" 2>/dev/null || true
+    rm -f "${HOME}/.aws/credentials" "${HOME}/.aws/config" || true
     set -x
 }
 trap CleanupCredentials EXIT
@@ -41,7 +41,7 @@ trap CleanupCredentials EXIT
 # Need — assert a command exists
 #=====================
 Need() {
-    command -v "$1" >/dev/null 2>&1 || {
+    command -v "$1" 1>/dev/null || {
         echo "[FATAL] '$1' not found in PATH" >&2
         exit 1
     }
@@ -209,7 +209,7 @@ LabelGatewayNode() {
         KUBECONFIG="${kubeconfig}" oc get nodes \
             -l node-role.kubernetes.io/worker \
             --field-selector='status.conditions[?(@.type=="Ready")].status=True' \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+            -o jsonpath='{.items[0].metadata.name}' || true
     )"
 
     if [[ -z "${gatewayNode}" ]]; then
@@ -232,7 +232,7 @@ LabelGatewayNode() {
         --overwrite
 
     KUBECONFIG="${kubeconfig}" oc adm taint node "${gatewayNode}" \
-        node-role.kubernetes.io/infra:NoSchedule- 2>/dev/null || true
+        node-role.kubernetes.io/infra:NoSchedule- || true
 
     echo "[INFO] Gateway node labeled: ${gatewayNode}"
 }
