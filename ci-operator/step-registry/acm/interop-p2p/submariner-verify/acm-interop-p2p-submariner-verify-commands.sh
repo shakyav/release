@@ -1,0 +1,326 @@
+#!/bin/bash
+#
+# Step 3 of 3: Submariner Connectivity Verification
+#
+# Responsibilities:
+#   - Deploy nginx pod + ClusterIP service on spoke 1, export it via ServiceExport
+#   - Wait for ServiceImport to appear on spoke 2
+#   - Wait for GlobalIngressIP to be allocated on spoke 1 (fixes curl NXDOMAIN)
+#   - Curl clusterset DNS from spoke 2 to verify cross-cluster routing
+#   - Validate headless globalnet service discovery
+#   - Run 'subctl verify' for comprehensive tunnel + service-discovery tests
+#
+# Requires: subctl and yq binaries in SHARED_DIR (written by submariner-cloud-prepare)
+#
+
+set -euo pipefail; shopt -s inherit_errexit
+
+#=====================
+# Constants
+#=====================
+typeset -r subctlBin="${SHARED_DIR}/subctl"
+typeset -r yqBin="${SHARED_DIR}/yq"
+typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
+
+#=====================
+# Need — assert a command exists
+#=====================
+Need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "[FATAL] '$1' not found in PATH" >&2
+        exit 1
+    }
+}
+
+#=====================
+# LoadSpokeConfig — populate spokeKubeconfigs, spokeNames
+#=====================
+typeset -a spokeKubeconfigs=()
+typeset -a spokeNames=()
+
+LoadSpokeConfig() {
+    typeset -i i
+    for ((i = 1; i <= spokeCount; i++)); do
+        typeset kcFile="${SHARED_DIR}/managed-cluster-kubeconfig-${i}"
+        typeset nameFile="${SHARED_DIR}/managed-cluster-name-${i}"
+
+        if [[ ! -f "${kcFile}" ]]; then
+            echo "[FATAL] Spoke ${i} kubeconfig not found: ${kcFile}" >&2
+            exit 1
+        fi
+        if [[ ! -f "${nameFile}" ]]; then
+            echo "[FATAL] Spoke ${i} name file not found: ${nameFile}" >&2
+            exit 1
+        fi
+
+        spokeKubeconfigs+=("${kcFile}")
+        spokeNames+=("$(cat "${nameFile}")")
+        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}"
+    done
+}
+
+#=====================
+# VerifyNginxConnectivity — deploy nginx on source, curl from target
+#
+# $1 = kubeconfig of source spoke (nginx lives here)
+# $2 = kubeconfig of target spoke (curl runs from here)
+# $3 = source spoke name (used for logging)
+# $4 = target spoke name (used for logging)
+#=====================
+VerifyNginxConnectivity() {
+    typeset kcSource="$1"
+    typeset kcTarget="$2"
+    typeset sourceCluster="$3"
+    typeset targetCluster="$4"
+
+    echo "[INFO] === Nginx connectivity: ${sourceCluster} -> ${targetCluster} ==="
+
+    # Deploy nginx on source cluster
+    echo "[INFO] Deploying nginx on '${sourceCluster}'"
+    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  namespace: default
+  labels:
+    app: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginxinc/nginx-unprivileged:stable-alpine
+    ports:
+    - containerPort: 8080
+EOF
+
+    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 8080
+EOF
+
+    echo "[INFO] Waiting for nginx Pod to be Running on '${sourceCluster}'"
+    KUBECONFIG="${kcSource}" oc -n default wait pod/nginx \
+        --for condition=Ready \
+        --timeout=3m
+
+    # Export the service for cross-cluster discovery
+    echo "[INFO] Creating ServiceExport for nginx on '${sourceCluster}'"
+    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceExport
+metadata:
+  name: nginx
+  namespace: default
+EOF
+
+    # Wait for ServiceImport to propagate to target cluster
+    typeset -i siWait=0
+    typeset -i siMax=180
+    echo "[INFO] Waiting for ServiceImport 'nginx' on '${targetCluster}' (timeout=${siMax}s)"
+    while (( siWait < siMax )); do
+        if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default &>/dev/null 2>&1; then
+            echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s"
+            break
+        fi
+        echo "[INFO]   ServiceImport not yet available (${siWait}/${siMax}s elapsed)"
+        sleep 10
+        (( siWait += 10 ))
+    done
+
+    if (( siWait >= siMax )); then
+        echo "[ERROR] ServiceImport 'nginx' not found on '${targetCluster}' after ${siMax}s" >&2
+        echo "[DEBUG] ServiceImports in default namespace on '${targetCluster}':" >&2
+        KUBECONFIG="${kcTarget}" oc get serviceimports -n default -o wide 2>&1 || true
+        echo "[DEBUG] GlobalIngressIPs on '${sourceCluster}':" >&2
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || true
+        exit 1
+    fi
+
+    # Wait for GlobalIngressIP to be allocated on source cluster.
+    # Without this, Lighthouse CoreDNS has no IP to return for the
+    # clusterset.local DNS query and curl fails with NXDOMAIN / exit 6.
+    typeset -i giWait=0
+    typeset -i giMax=180
+    typeset giIP=""
+    echo "[INFO] Waiting for GlobalIngressIP for nginx service on '${sourceCluster}' (timeout=${giMax}s)"
+    while (( giWait < giMax )); do
+        giIP="$(
+            KUBECONFIG="${kcSource}" oc get globalingressips \
+                -n default \
+                -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' \
+                2>/dev/null || true
+        )"
+        if [[ -n "${giIP}" ]]; then
+            echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)"
+            break
+        fi
+        echo "[INFO]   No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)"
+        sleep 10
+        (( giWait += 10 ))
+    done
+
+    if [[ -z "${giIP}" ]]; then
+        echo "[ERROR] GlobalIngressIP not allocated for nginx on '${sourceCluster}' after ${giMax}s" >&2
+        echo "[DEBUG] All GlobalIngressIPs on '${sourceCluster}':" >&2
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || true
+        echo "[DEBUG] ServiceExports on '${sourceCluster}':" >&2
+        KUBECONFIG="${kcSource}" oc get serviceexports -n default -o wide 2>&1 || true
+        exit 1
+    fi
+
+    # Clean up any previous nettest pod before running the curl
+    KUBECONFIG="${kcTarget}" oc -n default delete pod submariner-nettest \
+        --ignore-not-found --grace-period=0 2>/dev/null || true
+
+    echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local"
+    KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
+        --image=quay.io/submariner/nettest:latest \
+        --restart=Never \
+        --command -- \
+        curl -v --retry 5 --retry-delay 10 --retry-connrefused \
+            "http://nginx.default.svc.clusterset.local:80/"
+
+    echo "[INFO] Waiting for nettest pod to complete on '${targetCluster}'"
+    KUBECONFIG="${kcTarget}" oc -n default wait pod/submariner-nettest \
+        --for condition=Ready \
+        --timeout=2m || true
+
+    KUBECONFIG="${kcTarget}" oc -n default logs submariner-nettest --tail=50 2>&1 || true
+
+    typeset exitCode
+    exitCode="$(
+        KUBECONFIG="${kcTarget}" oc -n default get pod submariner-nettest \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo ""
+    )"
+    if [[ "${exitCode}" != "0" ]]; then
+        echo "[ERROR] nettest curl failed (exitCode=${exitCode}) on '${targetCluster}'" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest 2>&1 || true
+        exit 1
+    fi
+
+    echo "[INFO] Nginx connectivity verified: ${sourceCluster} -> ${targetCluster}"
+}
+
+#=====================
+# WaitGlobalnetHeadlessServiceReady — wait for headless service GlobalIngressIP
+#
+# $1 = kubeconfig
+# $2 = cluster name (for logging)
+#=====================
+WaitGlobalnetHeadlessServiceReady() {
+    typeset kubeconfig="$1"
+    typeset clusterName="$2"
+
+    echo "[INFO] Checking headless service Globalnet readiness on '${clusterName}'"
+    typeset -i wait=0
+    typeset -i maxWait=180
+
+    while (( wait < maxWait )); do
+        typeset count
+        count="$(
+            KUBECONFIG="${kubeconfig}" oc get globalingressips \
+                -n default \
+                --no-headers 2>/dev/null | wc -l || echo "0"
+        )"
+        if (( count > 0 )); then
+            echo "[INFO] ${count} GlobalIngressIP(s) found on '${clusterName}' after ${wait}s"
+            KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide 2>/dev/null || true
+            break
+        fi
+        echo "[INFO]   No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)"
+        sleep 10
+        (( wait += 10 ))
+    done
+
+    if (( wait >= maxWait )); then
+        echo "[WARN] No GlobalIngressIPs found on '${clusterName}' after ${maxWait}s" >&2
+        KUBECONFIG="${kubeconfig}" oc get serviceexports -n default -o wide 2>&1 || true
+    fi
+}
+
+#=====================
+# VerifyConnectivity — run subctl verify between two spokes
+#
+# $1 = kubeconfig of spoke 1
+# $2 = kubeconfig of spoke 2
+# $3 = spoke 1 name (for logging)
+# $4 = spoke 2 name (for logging)
+#=====================
+VerifyConnectivity() {
+    typeset kc1="$1"
+    typeset kc2="$2"
+    typeset name1="$3"
+    typeset name2="$4"
+
+    echo "[INFO] Running subctl verify: ${name1} <-> ${name2}"
+    "${subctlBin}" verify \
+        --kubecontexts "${kc1},${kc2}" \
+        --connection-attempts 3 \
+        --connection-timeout 60 \
+        --verbose \
+        2>&1 | tee /tmp/subctl-verify-"${name1}"-"${name2}".log || {
+            echo "[ERROR] subctl verify failed between '${name1}' and '${name2}'" >&2
+            exit 1
+        }
+    echo "[INFO] subctl verify passed: ${name1} <-> ${name2}"
+}
+
+#=====================
+# Main
+#=====================
+Need oc
+Need jq
+
+if [[ ! -x "${subctlBin}" ]]; then
+    echo "[FATAL] subctl not found in SHARED_DIR (${subctlBin}). Was acm-interop-p2p-submariner-cloud-prepare run?" >&2
+    exit 1
+fi
+
+if [[ ! -x "${yqBin}" ]]; then
+    echo "[FATAL] yq not found in SHARED_DIR (${yqBin}). Was acm-interop-p2p-submariner-cloud-prepare run?" >&2
+    exit 1
+fi
+
+LoadSpokeConfig
+
+# Verify connectivity for each pair of spokes
+# With 2 spokes: spoke[0] (source) -> spoke[1] (target)
+typeset -i i j
+for ((i = 0; i < spokeCount; i++)); do
+    for ((j = 0; j < spokeCount; j++)); do
+        if (( i == j )); then
+            continue
+        fi
+        VerifyNginxConnectivity \
+            "${spokeKubeconfigs[i]}" \
+            "${spokeKubeconfigs[j]}" \
+            "${spokeNames[i]}" \
+            "${spokeNames[j]}"
+    done
+done
+
+# Check Globalnet headless service readiness on all spokes
+for ((i = 0; i < spokeCount; i++)); do
+    WaitGlobalnetHeadlessServiceReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
+done
+
+# Run subctl verify between first two spokes (covers tunnel + service-discovery)
+if (( spokeCount >= 2 )); then
+    VerifyConnectivity \
+        "${spokeKubeconfigs[0]}" \
+        "${spokeKubeconfigs[1]}" \
+        "${spokeNames[0]}" \
+        "${spokeNames[1]}"
+fi
+
+echo "[INFO] Submariner connectivity verification complete"
+true

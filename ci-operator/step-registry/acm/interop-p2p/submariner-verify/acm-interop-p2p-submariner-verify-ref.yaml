@@ -1,0 +1,33 @@
+ref:
+  as: acm-interop-p2p-submariner-verify
+  from: cli
+  commands: acm-interop-p2p-submariner-verify-commands.sh
+  resources:
+    requests:
+      cpu: 100m
+      memory: 250Mi
+  timeout: 30m0s
+  documentation: |-
+    Step 3 of 3 in the Submariner installation chain.
+
+    Validates cross-cluster Submariner connectivity:
+      1. Deploys an nginx Pod + ClusterIP Service on spoke 1
+      2. Creates a ServiceExport on spoke 1 (triggers GlobalIngressIP allocation)
+      3. Waits for ServiceImport to propagate to spoke 2
+      4. Waits for GlobalIngressIP to be allocated on spoke 1
+      5. Runs a curl from a nettest Pod on spoke 2 to the clusterset DNS name
+      6. Validates headless Service discovery (WaitGlobalnetHeadlessServiceReady)
+      7. Runs 'subctl verify' for tunnel and service-discovery e2e tests
+
+    The GlobalIngressIP wait (step 4) prevents the curl: (6) Could not resolve
+    host failure that occurs when Lighthouse CoreDNS has not yet received the
+    IP from submariner-globalnet.
+
+    Inputs from SHARED_DIR (written by submariner-cloud-prepare):
+      subctl  - subctl binary
+      yq      - yq binary
+
+    Env vars consumed:
+      ACM_SPOKE_CLUSTER_COUNT  - number of spoke clusters (default: 2)
+      KUBECONFIG               - hub cluster kubeconfig
+      SHARED_DIR               - shared artifact directory

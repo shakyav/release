@@ -1,0 +1,31 @@
+ref:
+  as: acm-interop-p2p-submariner-broker-join
+  from: cli
+  commands: acm-interop-p2p-submariner-broker-join-commands.sh
+  resources:
+    requests:
+      cpu: 100m
+      memory: 250Mi
+  timeout: 1h0m0s
+  documentation: |-
+    Step 2 of 3 in the Submariner installation chain.
+
+    Deploys the Submariner broker on the hub cluster, then joins each spoke
+    to the broker using 'subctl join'. After all spokes have joined, waits for:
+      - submariner-gateway DaemonSet to be fully available on each spoke
+      - submariner-globalnet DaemonSet on each spoke
+      - submariner-lighthouse-agent Deployment on each spoke
+      - submariner-lighthouse-coredns Deployment on each spoke
+      - OpenShift cluster CoreDNS (dns-default) to include Lighthouse forwarding
+
+    Inputs from SHARED_DIR (written by submariner-cloud-prepare):
+      subctl  - subctl binary
+
+    Sensitive data handling:
+      broker-info.subm is written to /tmp (never to SHARED_DIR) and removed
+      via a trap on EXIT after all 'subctl join' calls complete.
+
+    Env vars consumed:
+      ACM_SPOKE_CLUSTER_COUNT  - number of spoke clusters (default: 2)
+      KUBECONFIG               - hub cluster kubeconfig
+      SHARED_DIR               - shared artifact directory

@@ -1,5 +1,5 @@
 {
-	"path": "acm/interop-p2p/submariner-install/acm-interop-p2p-submariner-install-ref.yaml",
+	"path": "acm/interop-p2p/submariner-verify/acm-interop-p2p-submariner-verify-ref.yaml",
 	"owners": {
 		"approvers": [
 			"cspi-qe-ocp-lp"
