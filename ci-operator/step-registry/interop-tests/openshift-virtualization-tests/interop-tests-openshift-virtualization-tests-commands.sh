@@ -142,7 +142,7 @@ Cnv__ToggleCommonBootImageImport() {
     typeset status="${1:?}"; (($#)) && shift
     Retry 5 5 oc patch hco kubevirt-hyperconverged -n openshift-cnv \
         --type=merge \
-        -p "{\"spec\":{\"enableCommonBootImageImport\": ${status}}}"
+        -p "$(jq -cn --argjson v "${status}" '{"spec":{"enableCommonBootImageImport":$v}}')"
 
     # In some edge cases, the HCO deployment will be scaled down, and not scale up.
     oc scale deployment hco-operator --replicas 1 -n openshift-cnv
@@ -192,7 +192,7 @@ Cnv__ReimportDatavolumes() {
             # send dummy-annotation so the CSI-sidecar will send a DeleteSnapshot RPC
             for vsName in $(oc get volumesnapshot -n "${dvnamespace}" --selector=cdi.kubevirt.io/dataImportCron -ojsonpath='{.items[*].metadata.name}'); do
                 # Unfortunately, VolumeSnapshotContent resources do not include the label selectors of their associated VolumeSnapshots
-                vscName="$(oc get volumesnapshotcontent -o json | jq -r ".items[] | select(.spec.volumeSnapshotRef.name == \"${vsName}\") | .metadata.name")"
+                vscName="$(oc get volumesnapshotcontent -o json | jq -r --arg vsName "${vsName}" '.items[] | select(.spec.volumeSnapshotRef.name == $vsName) | .metadata.name')"
                 oc annotate volumesnapshotcontent "${vscName}" example.com/dummy-annotation="This is a dummy annotation"
             done
         fi

@@ -52,16 +52,23 @@ oc create namespace "${odfInstallNamespace}" --dry-run=client -o yaml | oc apply
 
 # Deploy operator group.
 {
-    oc create -f - --dry-run=client -o yaml --save-config
-} 0<<ocEOF | oc apply -f -
+    oc create -f - --dry-run=client -o json --save-config |
+    jq -c \
+        --arg ns "${odfInstallNamespace}" \
+        '
+        .metadata.name       = ($ns + "-operator-group") |
+        .metadata.namespace  = $ns |
+        .spec.targetNamespaces = [$ns]
+        '
+} 0<<'ocEOF' | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: "${odfInstallNamespace}-operator-group"
-  namespace: "${odfInstallNamespace}"
+  name: placeholder
+  namespace: placeholder
 spec:
   targetNamespaces:
-  - "${odfInstallNamespace}"
+  - placeholder
 ocEOF
 
 # Extract ICSP from the catalog image; apply if present, then wait for MCP update.
@@ -77,19 +84,26 @@ if [[ -e "icsp.yaml" ]]; then
 fi
 
 {
-    oc create -f - --dry-run=client -o yaml --save-config
-} 0<<ocEOF | oc apply -f -
+    oc create -f - --dry-run=client -o json --save-config |
+    jq -c \
+        --arg name  "${odfCatalogName}" \
+        --arg image "${odfCatalogImage}" \
+        '
+        .metadata.name = $name |
+        .spec.image    = $image
+        '
+} 0<<'ocEOF' | oc apply -f -
 kind: CatalogSource
 apiVersion: operators.coreos.com/v1alpha1
 metadata:
-  name: ${odfCatalogName}
+  name: placeholder
   namespace: openshift-marketplace
 spec:
   displayName: OpenShift Container Storage
   icon:
-    base64data: PHN2ZyBpZD0iTGF5ZXJfMSIgZGF0YS1uYW1lPSJMYXllciAxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTQ1Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6I2UwMDt9PC9zdHlsZT48L2RlZnM+PHRpdGxlPlJlZEhhdC1Mb2dvLUhhdC1Db2xvcjwvdGl0bGU+PHBhdGggZD0iTTE1Ny43Nyw2Mi42MWExNCwxNCwwLDAsMSwuMzEsMy40MmMwLDE0Ljg4LTE4LjEsMTcuNDYtMzAuNjEsMTcuNDZDNzguODMsODMuNDksNDIuNTMsNTMuMjYsNDIuNTMsNDRhNi40Myw2LjQzLDAsMCwxLC4yMi0xLjk0bC0zLjY2LDkuMDZhMTguNDUsMTguNDUsMCwwLDAtMS41MSw3LjMzYzAsMTguMTEsNDEsNDUuNDgsODcuNzQsNDUuNDgsMjAuNjksMCwzNi40My03Ljc2LDM2LjQzLTIxLjc3LDAtMS4wOCwwLTEuOTQtMS43My0xMC4xM1oiLz48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik0xMjcuNDcsODMuNDljMTIuNTEsMCwzMC42MS0yLjU4LDMwLjYxLTE3LjQ2YTE0LDE0LDAsMCwwLS4zMS0zLjQybC03LjQ1LTMyLjM2Yy0xLjcyLTcuMTItMy4yMy0xMC4zNS0xNS43My0xNi42QzEyNC44OSw4LjY5LDEwMy43Ni41LDk3LjUxLjUsOTEuNjkuNSw5MCw4LDgzLjA2LDhjLTYuNjgsMC0xMS42NC01LjYtMTcuODktNS42LTYsMC05LjkxLDQuMDktMTIuOTMsMTIuNSwwLDAtOC40MSwyMy43Mi05LjQ5LDI3LjE2QTYuNDMsNi40MywwLDAsMCw0Mi41Myw0NGMwLDkuMjIsMzYuMywzOS40NSw4NC45NCwzOS40NU0xNjAsNzIuMDdjMS43Myw4LjE5LDEuNzMsOS4wNSwxLjczLDEwLjEzLDAsMTQtMTUuNzQsMjEuNzctMzYuNDMsMjEuNzdDNzguNTQsMTA0LDM3LjU4LDc2LjYsMzcuNTgsNTguNDlhMTguNDUsMTguNDUsMCwwLDEsMS41MS03LjMzQzIyLjI3LDUyLC41LDU1LC41LDc0LjIyYzAsMzEuNDgsNzQuNTksNzAuMjgsMTMzLjY1LDcwLjI4LDQ1LjI4LDAsNTYuNy0yMC40OCw1Ni43LTM2LjY1LDAtMTIuNzItMTEtMjcuMTYtMzAuODMtMzUuNzgiLz48L3N2Zz4=
+    base64data: PHN2ZyBpZD0iTGF5ZXJfMSIgZGF0YS1uYW1lPSJMYXllciAxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTQ1Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6I2UwMDt9PC9zdHlsZT48L2RlZnM+PHRpdGxlPlJlZEhhdC1Mb2dvLUhhdC1Db2xvcjwvdGl0bGU+PHBhdGggZD0iTTE1Ny43Nyw2Mi42MWExNCwxNCwwLDAsMSwuMzEsMy40MmMwLDE0Ljg4LTE4LjEsMTcuNDYtMzAuNjEsMTcuNDZDNzguODMsODMuNDksNDIuNTMsNTMuMjYsNDIuNTMsNDRhNi40Myw2LjQzLDAsMCwxLC4yMi0xLjk0bC0zLjY2LDkuMDZhMTguNDUsMTguNDUsMCwwLDAtMS41MSw3LjMzYzAsMTguMTEsNDEsNDUuNDgsODcuNzQsNDUuNDgsMjAuNjksMCwzNi40My03Ljc2LDM2LjQzLTIxLjc3LDAtMS4wOCwwLTEuOTQtMS43My0xMC4xM1oiLz48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik0xMjcuNDcsODMuNDljMTIuNTEsMCwzMC42MS0yLjU4LDMwLjYxLTE3LjQ2YTE0LDE0LDAsMCwwLS4zMS0zLjQybC03LjQ1LTMyLjM2Yy0xLjcyLTcuMTItMy4yMy0xMC4zNS0xNS43My0xNi42QzEyNC44OSw4LjY5LDEwMy43Ni41LDk3LjUxLjUsOTEuNjkuNSw5MCw4LDgzLjA2LDhjLTYuNjgsMCwxMS42NC01LjYtMTcuODktNS42LTYsMC05LjkxLDQuMDktMTIuOTMsMTIuNSwwLDAtOC40MSwyMy43Mi05LjQ5LDI3LjE2QTYuNDMsNi40MywwLDAsMCw0Mi41Myw0NGMwLDkuMjIsMzYuMywzOS40NSw4NC45NCwzOS40NU0xNjAsNzIuMDdjMS43Myw4LjE5LDEuNzMsOS4wNSwxLjczLDEwLjEzLDAsMTQtMTUuNzQsMjEuNzctMzYuNDMsMjEuNzdDNzguNTQsMTA0LDM3LjU4LDc2LjYsMzcuNTgsNTguNDlhMTguNDUsMTguNDUsMCwwLDEsMS41MS03LjMzQzIyLjI3LDUyLC41LDU1LC41LDc0LjIyYzAsMzEuNDgsNzQuNTksNzAuMjgsMTMzLjY1LDcwLjI4LDQ1LjI4LDAsNTYuNy0yMC40OCw1Ni43LTM2LjY1LDAtMTIuNzItMTEtMjcuMTYtMzAuODMtMzUuNzgiLz48L3N2Zz4=
     mediatype: image/svg+xml
-  image: ${odfCatalogImage}
+  image: placeholder
   publisher: Red Hat
   sourceType: grpc
 ocEOF
@@ -103,18 +117,30 @@ oc label "CatalogSource/${odfCatalogName}" -n openshift-marketplace ocs-operator
 typeset subscriptionName=''
 subscriptionName="$(
     {
-        oc create -f - --dry-run=client -o yaml --save-config
-    } 0<<ocEOF | oc apply -f - -o jsonpath='{.metadata.name}'
+        oc create -f - --dry-run=client -o json --save-config |
+        jq -c \
+            --arg name "${ODF_SUBSCRIPTION_NAME}" \
+            --arg ns   "${odfInstallNamespace}" \
+            --arg chan  "${ODF_OPERATOR_CHANNEL}" \
+            --arg src  "${odfCatalogName}" \
+            '
+            .metadata.name      = $name |
+            .metadata.namespace = $ns |
+            .spec.channel       = $chan |
+            .spec.name          = $name |
+            .spec.source        = $src
+            '
+    } 0<<'ocEOF' | oc apply -f - -o jsonpath='{.metadata.name}'
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: ${ODF_SUBSCRIPTION_NAME}
-  namespace: ${odfInstallNamespace}
+  name: placeholder
+  namespace: placeholder
 spec:
-  channel: ${ODF_OPERATOR_CHANNEL}
+  channel: placeholder
   installPlanApproval: Automatic
-  name: ${ODF_SUBSCRIPTION_NAME}
-  source: ${odfCatalogName}
+  name: placeholder
+  source: placeholder
   sourceNamespace: openshift-marketplace
 ocEOF
 )"
@@ -122,8 +148,8 @@ ocEOF
 # Poll for installedCSV (20 min): 'oc wait' cannot test for a non-empty value, and the CSV
 # name is not known in advance so a loop is required. Use the fully-qualified resource type
 # to avoid collision with the ACM subscriptions CRD when ACM is installed on the same cluster.
-# 2>/dev/null || true: oc get exits non-zero while the Subscription object is still being
-# created; suppresses transient noise without masking real failures.
+# Transient "not found" stderr from oc get is expected while the Subscription is being created;
+# || true suppresses the non-zero exit without hiding real failures.
 typeset csvName=''
 typeset -i csvDeadline
 typeset -i tNow; tNow=$(date +%s)
@@ -131,7 +157,7 @@ typeset -i tNow; tNow=$(date +%s)
 until [[ -n "${csvName}" ]]; do
     csvName="$(oc -n "${odfInstallNamespace}" \
         get subscriptions.operators.coreos.com "${subscriptionName}" \
-        -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+        -o jsonpath='{.status.installedCSV}' || true)"
     if [[ -z "${csvName}" ]]; then
         tNow=$(date +%s)
         if (( tNow >= csvDeadline )); then
@@ -151,7 +177,7 @@ done
 # then oc wait for Established (phase 2) — oc wait requires the object to already exist.
 typeset -i crdWait=0
 typeset -i crdMax=300   # 5 minutes
-until oc get crd storageclusters.ocs.openshift.io &>/dev/null; do
+until oc get crd storageclusters.ocs.openshift.io 1>/dev/null; do
     if (( crdWait >= crdMax )); then
         echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after ${crdMax}s" >&2
         echo "[DEBUG] OCS/ODF CRDs currently registered:" >&2
@@ -185,13 +211,24 @@ oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
 
 {
-    oc create -f - --dry-run=client -o yaml --save-config
-} 0<<ocEOF | oc apply -f -
+    oc create -f - --dry-run=client -o json --save-config |
+    jq -c \
+        --arg name         "${ODF_STORAGE_CLUSTER_NAME}" \
+        --arg ns           "${odfInstallNamespace}" \
+        --arg storage      "${ODF_VOLUME_SIZE}Gi" \
+        --arg storageClass "${ODF_BACKEND_STORAGE_CLASS}" \
+        '
+        .metadata.name                                                              = $name |
+        .metadata.namespace                                                         = $ns |
+        .spec.storageDeviceSets[0].dataPVCTemplate.spec.resources.requests.storage = $storage |
+        .spec.storageDeviceSets[0].dataPVCTemplate.spec.storageClassName            = $storageClass
+        '
+} 0<<'ocEOF' | oc apply -f -
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
 metadata:
-  name: ${ODF_STORAGE_CLUSTER_NAME}
-  namespace: ${odfInstallNamespace}
+  name: placeholder
+  namespace: placeholder
 spec:
   storageDeviceSets:
   - count: 1
@@ -201,8 +238,8 @@ spec:
         - ReadWriteOnce
         resources:
           requests:
-            storage: ${ODF_VOLUME_SIZE}Gi
-        storageClassName: ${ODF_BACKEND_STORAGE_CLASS}
+            storage: placeholder
+        storageClassName: placeholder
         volumeMode: Block
     name: ocs-deviceset
     placement: {}
@@ -222,12 +259,12 @@ typeset -i rbdMax=1800
 until [[ -n "${rbdDs}" ]]; do
     rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
         -o jsonpath='{.items[?(@.spec.selector.matchLabels.app=="rook-ceph-csi")].metadata.name}' \
-        2>/dev/null || true)"
+        || true)"
     # Fallback: match any DaemonSet whose name contains 'rbd' and 'plugin'
     if [[ -z "${rbdDs}" ]]; then
         rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
-            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
-            | tr ' ' '\n' | grep -m1 'rbd.*plugin\|rbdplugin' 2>/dev/null || true)"
+            -o jsonpath='{.items[*].metadata.name}' \
+            | tr ' ' '\n' | grep -m1 'rbd.*plugin\|rbdplugin' || true)"
     fi
     if [[ -z "${rbdDs}" ]]; then
         if (( rbdWait >= rbdMax )); then
@@ -249,11 +286,11 @@ if ! oc rollout status "daemonset/${rbdDs}" \
     oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
     oc -n "${odfInstallNamespace}" get pods \
         -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
-        2>/dev/null | grep -i plugin >&2 || true
+        | grep -i plugin >&2 || true
     echo "[DEBUG] Describe first non-Running CSI pod:" >&2
     oc -n "${odfInstallNamespace}" get pods --no-headers \
         -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
-        2>/dev/null | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
+        | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
         | xargs -r oc -n "${odfInstallNamespace}" describe pod >&2 || true
     exit 1
 fi
