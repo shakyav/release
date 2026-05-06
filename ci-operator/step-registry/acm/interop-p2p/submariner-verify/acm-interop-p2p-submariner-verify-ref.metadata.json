@@ -2,10 +2,10 @@
 	"path": "acm/interop-p2p/submariner-verify/acm-interop-p2p-submariner-verify-ref.yaml",
 	"owners": {
 		"approvers": [
-			"cspi-qe-ocp-lp"
+			"vshakya"
 		],
 		"reviewers": [
-			"cspi-qe-ocp-lp"
+			"vshakya"
 		]
 	}
 }

@@ -7,6 +7,7 @@ ref:
       cpu: 100m
       memory: 250Mi
   timeout: 1h0m0s
+  grace_period: 10m0s
   documentation: |-
     Step 2 of 3 in the Submariner installation chain.
 

@@ -2,10 +2,10 @@
 	"path": "acm/interop-p2p/submariner-cloud-prepare/acm-interop-p2p-submariner-cloud-prepare-ref.yaml",
 	"owners": {
 		"approvers": [
-			"cspi-qe-ocp-lp"
+			"vshakya"
 		],
 		"reviewers": [
-			"cspi-qe-ocp-lp"
+			"vshakya"
 		]
 	}
 }
