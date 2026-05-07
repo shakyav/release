@@ -79,9 +79,9 @@ else
 fi
 
 SetDefaultStorageClass() {
-    typeset storageclassName="${1:?}"; (($#)) && shift
+    typeset storageClassName="${1:?}"; (($#)) && shift
     oc get storageclass -o name | xargs -trI{} oc patch {} -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "false"}}}'
-    oc patch storageclass "${storageclassName}" -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
+    oc patch storageclass "${storageClassName}" -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
     true
 }
 
@@ -157,11 +157,11 @@ Cnv__ToggleCommonBootImageImport() {
 # Re-import datavolumes, for example after changing the default storage class
 #
 Cnv__ReimportDatavolumes() {
-    typeset dvnamespace="openshift-virtualization-os-images"
+    typeset dvNamespace="openshift-virtualization-os-images"
     Cnv__ToggleCommonBootImageImport "false"
     sleep 1
 
-    oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete' --timeout=10m
+    oc wait dataimportcrons -n "${dvNamespace}" --all --for='delete' --timeout=10m
 
     # `oc delete` command does not account for dependencies or the sequence in which OpenShift resources are managed.
     # So we need to run the following commands in order to avoid issues like:
@@ -169,10 +169,10 @@ Cnv__ReimportDatavolumes() {
     # potentially leaving the snapshot's finalizer in place
 
     # Delete these first since they might reference datavolumes or snapshots indirectly
-    oc delete datasources -n "${dvnamespace}" --selector='cdi.kubevirt.io/dataImportCron'
+    oc delete datasources -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron'
 
     # Delete next because they might have dependencies on PVCs
-    oc delete datavolumes -n "${dvnamespace}" --selector='cdi.kubevirt.io/dataImportCron'
+    oc delete datavolumes -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron'
 
     # Ugly hack for this external-snapshotter bug: https://github.com/kubernetes-csi/external-snapshotter/issues/1258.
     typeset -i retryCount=0
@@ -180,9 +180,9 @@ Cnv__ReimportDatavolumes() {
     typeset -i snapshotDeleteTimeoutSec=30
     typeset vsName vscName
     while (( retryCount < maxRetries )); do
-        : "Attempting to delete all volumesnapshots in namespace ${dvnamespace} (Attempt $((retryCount + 1)) of ${maxRetries})..."
+        : "Attempting to delete all volumesnapshots in namespace ${dvNamespace} (Attempt $((retryCount + 1)) of ${maxRetries})..."
 
-        if oc delete volumesnapshots -n "${dvnamespace}" --selector=cdi.kubevirt.io/dataImportCron --timeout="${snapshotDeleteTimeoutSec}s" --ignore-not-found; then
+        if oc delete volumesnapshots -n "${dvNamespace}" --selector=cdi.kubevirt.io/dataImportCron --timeout="${snapshotDeleteTimeoutSec}s" --ignore-not-found; then
             : "Successfully deleted all volumesnapshots"
             break
         else
@@ -190,7 +190,7 @@ Cnv__ReimportDatavolumes() {
             retryCount=$((retryCount + 1))
 
             # send dummy-annotation so the CSI-sidecar will send a DeleteSnapshot RPC
-            for vsName in $(oc get volumesnapshot -n "${dvnamespace}" --selector=cdi.kubevirt.io/dataImportCron -ojsonpath='{.items[*].metadata.name}'); do
+            for vsName in $(oc get volumesnapshot -n "${dvNamespace}" --selector=cdi.kubevirt.io/dataImportCron -ojsonpath='{.items[*].metadata.name}'); do
                 # Unfortunately, VolumeSnapshotContent resources do not include the label selectors of their associated VolumeSnapshots
                 vscName="$(oc get volumesnapshotcontent -o json | jq -r --arg vsName "${vsName}" '.items[] | select(.spec.volumeSnapshotRef.name == $vsName) | .metadata.name')"
                 oc annotate volumesnapshotcontent "${vscName}" example.com/dummy-annotation="This is a dummy annotation"
@@ -204,12 +204,12 @@ Cnv__ReimportDatavolumes() {
     fi
 
     # Finally, delete PVCs
-    oc delete pvc -n "${dvnamespace}" --selector='cdi.kubevirt.io/dataImportCron'
+    oc delete pvc -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron'
 
     Cnv__ToggleCommonBootImageImport "true"
     sleep 10
-    oc wait DataImportCron -n "${dvnamespace}" --all --for=condition=UpToDate --timeout=20m
-    oc get pvc -n "${dvnamespace}"
+    oc wait DataImportCron -n "${dvNamespace}" --all --for=condition=UpToDate --timeout=20m
+    oc get pvc -n "${dvNamespace}"
     true
 }
 
