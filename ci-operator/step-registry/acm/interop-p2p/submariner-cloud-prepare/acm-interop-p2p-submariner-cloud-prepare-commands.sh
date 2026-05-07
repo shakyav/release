@@ -19,8 +19,6 @@ set -euxo pipefail; shopt -s inherit_errexit
 #=====================
 typeset -r subctlBin="${SHARED_DIR}/subctl"
 typeset -r yqBin="${SHARED_DIR}/yq"
-typeset -r subctlVersion="v0.18.0"
-typeset -r yqVersion="v4.44.2"
 typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 
 # Temporary file path for AWS credentials (populated by SetAwsCredentials)
@@ -48,29 +46,32 @@ Need() {
 }
 
 #=====================
-# InstallSubctl — download subctl to SHARED_DIR
+# InstallSubctl — install subctl via the official installer, copy binary to SHARED_DIR
 #=====================
+# Uses the official https://get.submariner.io installer so no manual version
+# management or URL format changes are needed.  The binary is copied into
+# SHARED_DIR so that the broker-join and verify steps (running in separate
+# containers) can reuse it without downloading again.
 InstallSubctl() {
     if [[ -x "${subctlBin}" ]]; then
         echo "[INFO] subctl already present in SHARED_DIR, skipping download" >&2
         return
     fi
-    echo "[INFO] Downloading subctl ${subctlVersion} to SHARED_DIR" >&2
-    typeset tarball
-    tarball="$(mktemp /tmp/subctl-XXXXXX.tar.xz)"
-    curl -fsSL \
-        "https://github.com/submariner-io/subctl/releases/download/${subctlVersion}/subctl-${subctlVersion}-linux-amd64.tar.xz" \
-        -o "${tarball}"
-    tar -xJf "${tarball}" --wildcards --strip-components=1 -C "${SHARED_DIR}" '*/subctl'
+    echo "[INFO] Installing subctl via https://get.submariner.io" >&2
+    curl -Ls https://get.submariner.io | bash
+    cp "${HOME}/.local/bin/subctl" "${subctlBin}"
     chmod +x "${subctlBin}"
-    rm -f "${tarball}"
     echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)" >&2
 }
 
 #=====================
 # InstallYq — download yq to SHARED_DIR
 #=====================
+# yq is used by the verify step; a pinned release keeps the binary small and
+# avoids the version-drift risk that subctl's rolling tag already accepts.
+# SHARED_DIR is used so the verify step can reuse the binary without a second download.
 InstallYq() {
+    typeset -r yqVersion="v4.44.2"
     if [[ -x "${yqBin}" ]]; then
         echo "[INFO] yq already present in SHARED_DIR, skipping download" >&2
         return
