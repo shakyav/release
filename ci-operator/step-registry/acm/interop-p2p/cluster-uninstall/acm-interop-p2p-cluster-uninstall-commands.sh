@@ -20,17 +20,17 @@ set -euxo pipefail; shopt -s inherit_errexit
 typeset -a clusters_to_uninstall=()
 if [[ -f "${SHARED_DIR}/managed-cluster-names" ]]; then
     mapfile -t clusters_to_uninstall < <(grep -v '^[[:space:]]*$' "${SHARED_DIR}/managed-cluster-names" || true)
-    echo "[INFO] Loaded ${#clusters_to_uninstall[@]} cluster(s) from managed-cluster-names"
+    echo "[INFO] Loaded ${#clusters_to_uninstall[@]} cluster(s) from managed-cluster-names" >&2
 elif [[ -f "${SHARED_DIR}/managed-cluster-name-1" ]]; then
     typeset idx=1
     while [[ -f "${SHARED_DIR}/managed-cluster-name-${idx}" ]]; do
         clusters_to_uninstall+=("$(cat "${SHARED_DIR}/managed-cluster-name-${idx}")")
         ((++idx))
     done
-    echo "[INFO] Loaded ${#clusters_to_uninstall[@]} cluster(s) from managed-cluster-name-{N} files"
+    echo "[INFO] Loaded ${#clusters_to_uninstall[@]} cluster(s) from managed-cluster-name-{N} files" >&2
 elif [[ -f "${SHARED_DIR}/managed-cluster-name" ]]; then
     clusters_to_uninstall=("$(cat "${SHARED_DIR}/managed-cluster-name")")
-    echo "[INFO] Loaded 1 cluster from managed-cluster-name (single-cluster mode)"
+    echo "[INFO] Loaded 1 cluster from managed-cluster-name (single-cluster mode)" >&2
 else
     echo "[ERROR] No cluster name file found. Expected one of: managed-cluster-names, managed-cluster-name-1, or managed-cluster-name" >&2
     exit 1
@@ -47,7 +47,7 @@ managed_cluster_json="$(oc get managedcluster -o json || echo '{"items":[]}')"
 typeset -a all_spokes=()
 mapfile -t all_spokes < <(echo "${managed_cluster_json}" | jq -r '.items[]? | select(.metadata.name!="local-cluster") | .metadata.name')
 if [[ ${#all_spokes[@]} -gt 0 ]]; then
-    echo "[INFO] Spoke ManagedClusters currently registered on hub: ${all_spokes[*]}"
+    echo "[INFO] Spoke ManagedClusters currently registered on hub: ${all_spokes[*]}" >&2
 fi
 
 typeset timeout_minutes="60"
@@ -79,7 +79,7 @@ UninstallCluster() {
     typeset cluster_name="$1"
     typeset namespace="${cluster_name}"
 
-    echo "[INFO] Uninstalling cluster '${cluster_name}' in namespace '${namespace}'"
+    echo "[INFO] Uninstalling cluster '${cluster_name}' in namespace '${namespace}'" >&2
 
     # Check if namespace exists
     if ! oc get ns "${namespace}" 1>/dev/null; then
@@ -91,56 +91,66 @@ UninstallCluster() {
     fi
 
     # Detach from ACM (ManagedCluster) and clean up Klusterlet config
-    echo "[INFO] Detaching from ACM (ManagedCluster) and cleaning up Klusterlet config for '${cluster_name}'"
+    echo "[INFO] Detaching from ACM (ManagedCluster) and cleaning up Klusterlet config for '${cluster_name}'" >&2
     if oc get managedcluster "${cluster_name}" 1>/dev/null; then
-        echo "[INFO] Deleting ManagedCluster '${cluster_name}' from ACM (this is the primary deletion step)"
+        echo "[INFO] Deleting ManagedCluster '${cluster_name}' from ACM (this is the primary deletion step)" >&2
         if [[ "${force_delete_mc}" == "true" ]]; then
-            echo "[WARN] Force deleting ManagedCluster finalizers (if any)"
+            echo "[WARN] Force deleting ManagedCluster finalizers (if any)" >&2
             oc patch managedcluster "${cluster_name}" --type=merge -p '{"metadata":{"finalizers":null}}'
         fi
         oc delete managedcluster "${cluster_name}" --ignore-not-found=true
     else
-        echo "[INFO] ManagedCluster '${cluster_name}' not present (already removed)"
+        echo "[INFO] ManagedCluster '${cluster_name}' not present (already removed)" >&2
     fi
 
     if oc -n "${namespace}" get klusterletaddonconfig "${cluster_name}" 1>/dev/null; then
-        echo "[INFO] Deleting KlusterletAddonConfig '${cluster_name}'"
+        echo "[INFO] Deleting KlusterletAddonConfig '${cluster_name}'" >&2
         oc -n "${namespace}" delete klusterletaddonconfig "${cluster_name}" --ignore-not-found=true
     fi
 
     # Ensure ClusterDeployment triggers infrastructure deprovisioning
-    echo "[INFO] Ensuring ClusterDeployment triggers infrastructure deprovisioning for '${cluster_name}'"
+    echo "[INFO] Ensuring ClusterDeployment triggers infrastructure deprovisioning for '${cluster_name}'" >&2
     typeset deprov_name=""
+    # need_deprov_wait is true when Hive is (or will be) running a ClusterDeprovision:
+    #   - We just deleted the ClusterDeployment → Hive will create a ClusterDeprovision shortly
+    #   - ClusterDeployment was already gone but a ClusterDeprovision object exists → wait for it
+    # It is false only when ClusterDeployment is already gone AND no ClusterDeprovision exists,
+    # which means infrastructure was already cleaned up.
+    typeset need_deprov_wait="false"
+
     if oc -n "${namespace}" get clusterdeployment "${cluster_name}" 1>/dev/null; then
-        echo "[INFO] Patching ClusterDeployment '${cluster_name}' to ensure preserveOnDelete=false"
+        echo "[INFO] Patching ClusterDeployment '${cluster_name}' to ensure preserveOnDelete=false" >&2
         oc -n "${namespace}" patch clusterdeployment "${cluster_name}" --type=merge -p '{"spec":{"preserveOnDelete":false}}'
-        echo "[INFO] Deleting ClusterDeployment '${cluster_name}' to initiate deprovisioning"
+        echo "[INFO] Deleting ClusterDeployment '${cluster_name}' to initiate deprovisioning" >&2
         oc -n "${namespace}" delete clusterdeployment "${cluster_name}" --wait=false
+        # deprov_name is still "" here; the inner poll loop below will wait for Hive
+        # to create the ClusterDeprovision object before waiting for its completion.
+        need_deprov_wait="true"
     else
-        echo "[INFO] ClusterDeployment '${cluster_name}' already gone, checking for existing ClusterDeprovision."
+        echo "[INFO] ClusterDeployment '${cluster_name}' already gone, checking for existing ClusterDeprovision." >&2
         deprov_name="$(PickLatestDeprovName "${namespace}")"
         if [[ -z "${deprov_name}" ]]; then
-            echo "[INFO] No ClusterDeprovision found for '${cluster_name}'; infrastructure already cleaned up, skipping deprovision wait."
+            echo "[INFO] No ClusterDeprovision found for '${cluster_name}'; infrastructure already cleaned up, skipping deprovision wait." >&2
         else
-            echo "[INFO] Found existing ClusterDeprovision '${deprov_name}', waiting for completion."
+            echo "[INFO] Found existing ClusterDeprovision '${deprov_name}', waiting for completion." >&2
+            need_deprov_wait="true"
         fi
     fi
 
-    # Watch deprovision progress only when there is a ClusterDeprovision to track.
-    # When deprov_name is empty (infrastructure already gone) we skip the wait and
-    # fall through to the ManagedClusterSet/ManagedClusterSetBinding cleanup below.
-    if [[ -n "${deprov_name}" ]]; then
-        echo "[INFO] Watching deprovision progress for '${cluster_name}'"
+    if [[ "${need_deprov_wait}" == "true" ]]; then
+        echo "[INFO] Watching deprovision progress for '${cluster_name}'" >&2
         typeset start_time
         start_time="$(date +%s)"
         typeset deadline
         deadline=$((start_time + timeout_minutes * 60))
 
-        echo "[INFO] Waiting for ClusterDeprovision object to be created for '${cluster_name}'..."
+        # Poll until Hive creates the ClusterDeprovision object (only needed when we just
+        # deleted the ClusterDeployment; skipped immediately when deprov_name is already set).
+        echo "[INFO] Waiting for ClusterDeprovision object to be created for '${cluster_name}'..." >&2
         while [[ -z "${deprov_name}" ]]; do
             deprov_name="$(PickLatestDeprovName "${namespace}")"
             if [[ -n "${deprov_name}" ]]; then
-                echo "[INFO] Found ClusterDeprovision: ${deprov_name}"
+                echo "[INFO] Found ClusterDeprovision: ${deprov_name}" >&2
                 break
             fi
             if (( $(date +%s) > deadline )); then
@@ -150,25 +160,25 @@ UninstallCluster() {
             sleep "${poll_seconds}"
         done
 
-        echo "[INFO] Waiting for ClusterDeprovision '${deprov_name}'.status.completed=true (timeout=${timeout_minutes}m)"
+        echo "[INFO] Waiting for ClusterDeprovision '${deprov_name}'.status.completed=true (timeout=${timeout_minutes}m)" >&2
         oc -n "${namespace}" wait \
             --for=jsonpath='{.status.completed}'=true \
             "clusterdeprovision/${deprov_name}" \
             --timeout="${timeout_minutes}m"
 
-        echo "[INFO] Cluster '${cluster_name}' deprovisioning completed successfully."
+        echo "[INFO] Cluster '${cluster_name}' deprovisioning completed successfully." >&2
     fi
 
     # Remove binding before ManagedClusterSet (install creates ManagedClusterSetBinding in namespace)
     typeset mc_set_name="${cluster_name}-set"
     if oc -n "${namespace}" get managedclustersetbinding "${mc_set_name}" 1>/dev/null; then
-        echo "[INFO] Deleting ManagedClusterSetBinding '${mc_set_name}' in namespace '${namespace}'"
+        echo "[INFO] Deleting ManagedClusterSetBinding '${mc_set_name}' in namespace '${namespace}'" >&2
         oc -n "${namespace}" delete managedclustersetbinding "${mc_set_name}" --ignore-not-found=true --wait=false
     fi
 
     # Delete ManagedClusterSet (cluster-scoped, created per cluster)
     if oc get managedclusterset "${mc_set_name}" 1>/dev/null; then
-        echo "[INFO] Deleting ManagedClusterSet '${mc_set_name}'"
+        echo "[INFO] Deleting ManagedClusterSet '${mc_set_name}'" >&2
         oc delete managedclusterset "${mc_set_name}" --ignore-not-found=true
     fi
 
@@ -181,7 +191,7 @@ Need jq
 #=====================
 # Uninstall all clusters
 #=====================
-echo "[INFO] Uninstalling ${#clusters_to_uninstall[@]} spoke cluster(s): ${clusters_to_uninstall[*]}"
+echo "[INFO] Uninstalling ${#clusters_to_uninstall[@]} spoke cluster(s): ${clusters_to_uninstall[*]}" >&2
 
 typeset failed=0
 for cluster_name in "${clusters_to_uninstall[@]}"; do
@@ -200,5 +210,5 @@ if [[ "${failed}" -gt 0 ]]; then
     exit 3
 fi
 
-echo "[INFO] All ${#clusters_to_uninstall[@]} spoke cluster(s) deprovisioned successfully."
+echo "[INFO] All ${#clusters_to_uninstall[@]} spoke cluster(s) deprovisioned successfully." >&2
 true

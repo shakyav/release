@@ -129,10 +129,36 @@ JsonGet() {
     oc -n "${1}" get "${2}" "${3}" -o json
 }
 
+#=====================
+# InstallYq — install yq to /tmp/bin if not already in PATH
+#=====================
+# yq converts JSON output from jq back to YAML for Kubernetes manifests.
+# The cli-jq image ships oc and jq but not yq; this function downloads
+# a pinned release on demand and prepends /tmp/bin to PATH.
+InstallYq() {
+    if command -v yq 1>/dev/null; then
+        echo "[INFO] yq already in PATH: $(yq --version 2>&1)" >&2
+        return
+    fi
+    typeset -r yqVersion="v4.44.2"
+    typeset yqArch
+    yqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
+    echo "[INFO] Installing yq ${yqVersion} (${yqArch}) to /tmp/bin" >&2
+    mkdir -p /tmp/bin
+    curl -fsSL \
+        "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_${yqArch}" \
+        -o /tmp/bin/yq
+    chmod +x /tmp/bin/yq
+    export PATH="/tmp/bin:${PATH}"
+    echo "[INFO] yq installed: $(yq --version 2>&1)" >&2
+}
+
 # Verify required CLI tools are available
 Need oc
 Need jq
+Need curl
 Need base64
+InstallYq
 
 #=====================
 # Get hub cluster name for suffix generation
@@ -376,73 +402,55 @@ ocEOF
         --dry-run=client -o yaml | oc apply -f -
 
     # Generate OpenShift install-config.yaml
-    # This defines the cluster topology and infrastructure settings
-    # Note: Uses the cluster-specific region from the lease
-    echo "[INFO] Creating install-config for region '${cluster_region}'"
+    # install-config is an OpenShift Installer config, NOT a Kubernetes resource,
+    # so oc create --dry-run cannot process it (it would fail with "Kind is missing").
+    # Build the JSON document directly with jq -cn; all shell values are injected
+    # via --arg / --argjson so no shell expansion occurs inside the jq filter.
+    # JSON is a valid YAML superset: Hive reads install-config as YAML and accepts
+    # the JSON form without any conversion step.
+    echo "[INFO] Creating install-config for region '${cluster_region}'" >&2
     typeset install_config_file="/tmp/install-config-${cluster_name}.yaml"
 
-    {
-        oc create -f - --dry-run=client -o json |
-        jq -c \
-            --arg name     "${cluster_name}" \
-            --arg domain   "${BASE_DOMAIN}" \
-            --arg arch     "${ACM_SPOKE_ARCH_TYPE}" \
-            --arg cpType   "${ACM_SPOKE_CP_TYPE}" \
-            --argjson cpR  "${ACM_SPOKE_CP_REPLICAS}" \
-            --arg wkType   "${ACM_SPOKE_WORKER_TYPE}" \
-            --argjson wkR  "${ACM_SPOKE_WORKER_REPLICAS}" \
-            --arg netType  "${ACM_SPOKE_NETWORK_TYPE}" \
-            --arg region   "${cluster_region}" \
-            --arg sshKey   "$(<"${CLUSTER_PROFILE_DIR}/ssh-publickey")" \
-            '
-            .metadata.name                              = $name   |
-            .baseDomain                                 = $domain |
-            .controlPlane.architecture                  = $arch   |
-            .controlPlane.platform.aws.type             = $cpType |
-            .controlPlane.replicas                      = $cpR    |
-            .compute[0].architecture                    = $arch   |
-            .compute[0].platform.aws.type               = $wkType |
-            .compute[0].replicas                        = $wkR    |
-            .networking.networkType                     = $netType|
-            .platform.aws.region                        = $region |
-            .sshKey                                     = $sshKey
-            ' |
-        yq -p json -o yaml eval .
-    } 0<<'ocEOF' > "${install_config_file}"
-apiVersion: v1
-metadata:
-  name: placeholder
-baseDomain: placeholder
-controlPlane:
-  architecture: placeholder
-  hyperthreading: Enabled
-  name: master
-  replicas: 3
-  platform:
-    aws:
-      type: placeholder
-compute:
-- hyperthreading: Enabled
-  architecture: placeholder
-  name: 'worker'
-  replicas: 3
-  platform:
-    aws:
-      type: placeholder
-networking:
-  networkType: placeholder
-  clusterNetwork:
-  - cidr: 10.128.0.0/14
-    hostPrefix: 23
-  machineNetwork:
-  - cidr: 10.0.0.0/16
-  serviceNetwork:
-  - 172.30.0.0/16
-platform:
-  aws:
-    region: placeholder
-sshKey: placeholder
-ocEOF
+    jq -cn \
+        --arg name     "${cluster_name}" \
+        --arg domain   "${BASE_DOMAIN}" \
+        --arg arch     "${ACM_SPOKE_ARCH_TYPE}" \
+        --arg cpType   "${ACM_SPOKE_CP_TYPE}" \
+        --argjson cpR  "${ACM_SPOKE_CP_REPLICAS}" \
+        --arg wkType   "${ACM_SPOKE_WORKER_TYPE}" \
+        --argjson wkR  "${ACM_SPOKE_WORKER_REPLICAS}" \
+        --arg netType  "${ACM_SPOKE_NETWORK_TYPE}" \
+        --arg region   "${cluster_region}" \
+        --arg sshKey   "$(<"${CLUSTER_PROFILE_DIR}/ssh-publickey")" \
+        '{
+            "apiVersion": "v1",
+            "metadata": {"name": $name},
+            "baseDomain": $domain,
+            "controlPlane": {
+                "architecture": $arch,
+                "hyperthreading": "Enabled",
+                "name": "master",
+                "replicas": $cpR,
+                "platform": {"aws": {"type": $cpType}}
+            },
+            "compute": [
+                {
+                    "hyperthreading": "Enabled",
+                    "architecture": $arch,
+                    "name": "worker",
+                    "replicas": $wkR,
+                    "platform": {"aws": {"type": $wkType}}
+                }
+            ],
+            "networking": {
+                "networkType": $netType,
+                "clusterNetwork": [{"cidr": "10.128.0.0/14", "hostPrefix": 23}],
+                "machineNetwork": [{"cidr": "10.0.0.0/16"}],
+                "serviceNetwork": ["172.30.0.0/16"]
+            },
+            "platform": {"aws": {"region": $region}},
+            "sshKey": $sshKey
+        }' > "${install_config_file}"
 
     # Store install-config as a secret for Hive to consume
     echo "[INFO] Creating install-config secret"
@@ -454,7 +462,7 @@ ocEOF
     # Create ClusterDeployment - this is the main Hive resource
     # that triggers the actual cluster installation
     # Note: Uses the cluster-specific region from the lease
-    echo "[INFO] Creating ClusterDeployment '${cluster_name}' in region '${cluster_region}'"
+    echo "[INFO] Creating ClusterDeployment '${cluster_name}' in region '${cluster_region}'" >&2
     typeset cluster_deployment_file="/tmp/clusterdeployment-${cluster_name}.yaml"
 
     {
@@ -513,7 +521,7 @@ ocEOF
 
     # Create ManagedCluster - registers the cluster with ACM hub
     # hubAcceptsClient: true auto-approves the cluster registration
-    echo "[INFO] Creating ManagedCluster '${cluster_name}'"
+    echo "[INFO] Creating ManagedCluster '${cluster_name}'" >&2
     typeset managed_cluster_file="/tmp/managed_cluster-${cluster_name}.yaml"
 
     {
@@ -548,7 +556,7 @@ ocEOF
 
     # Create KlusterletAddonConfig - enables ACM features on the spoke cluster
     # This configures which ACM add-ons are deployed to the spoke
-    echo "[INFO] Creating KlusterletAddonConfig '${cluster_name}'"
+    echo "[INFO] Creating KlusterletAddonConfig '${cluster_name}'" >&2
     typeset klusterlet_addon_config_file="/tmp/klusterletaddonconfig-${cluster_name}.yaml"
 
     {
