@@ -13,6 +13,7 @@ ref:
   env:
   - name: TARGET_CHANNEL
     default: ""
+    documentation: OCP update channel to target (e.g. candidate-4.21). Leave empty to skip channel patching.
   - name: ACM_UPGRADE_TIMEOUT
     default: "2h"
     documentation: Time to wait for clusterversion upgrade to complete. Accepts any oc wait time unit (e.g. 30m, 2h, 7200s).

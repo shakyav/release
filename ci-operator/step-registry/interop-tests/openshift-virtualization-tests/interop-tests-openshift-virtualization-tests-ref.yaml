@@ -34,16 +34,19 @@ ref:
       OpenShift Version
   - default: '|7820aea2-0d75-11e7-9259-28d244ea5a6d.hhav.f63e13'
     name: BREW_IMAGE_REGISTRY_USERNAME
+    documentation: Brew image registry username for authenticated image pulls.
   - default: /var/run/cnv-ci-brew-pull-secret/token
     name: BREW_IMAGE_REGISTRY_TOKEN_PATH
+    documentation: Path to the file containing the Brew image registry authentication token.
   - default: v0.59.0-alpha.0
     name: KUBEVIRT_RELEASE
-  - default: "4.13"
-    name: OCP_VERSION
+    documentation: KubeVirt release version tag used for version-specific image resolution.
   - default: /tmp/artifacts
     name: ARTIFACTS_DIR
+    documentation: Directory path for storing test artifacts.
   - default: openshift-cnv
     name: TARGET_NAMESPACE
+    documentation: Namespace where the CNV / HCO operator is installed.
   - name: MAP_TESTS
     default: "false"
     documentation: Specify whether to update the test suite name for reporting tools
