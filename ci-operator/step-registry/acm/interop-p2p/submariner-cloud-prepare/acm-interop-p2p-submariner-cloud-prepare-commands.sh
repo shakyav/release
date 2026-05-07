@@ -52,10 +52,10 @@ Need() {
 #=====================
 InstallSubctl() {
     if [[ -x "${subctlBin}" ]]; then
-        echo "[INFO] subctl already present in SHARED_DIR, skipping download"
+        echo "[INFO] subctl already present in SHARED_DIR, skipping download" >&2
         return
     fi
-    echo "[INFO] Downloading subctl ${subctlVersion} to SHARED_DIR"
+    echo "[INFO] Downloading subctl ${subctlVersion} to SHARED_DIR" >&2
     typeset tarball
     tarball="$(mktemp /tmp/subctl-XXXXXX.tar.xz)"
     curl -fsSL \
@@ -64,7 +64,7 @@ InstallSubctl() {
     tar -xJf "${tarball}" --wildcards --strip-components=1 -C "${SHARED_DIR}" '*/subctl'
     chmod +x "${subctlBin}"
     rm -f "${tarball}"
-    echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)"
+    echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)" >&2
 }
 
 #=====================
@@ -72,15 +72,15 @@ InstallSubctl() {
 #=====================
 InstallYq() {
     if [[ -x "${yqBin}" ]]; then
-        echo "[INFO] yq already present in SHARED_DIR, skipping download"
+        echo "[INFO] yq already present in SHARED_DIR, skipping download" >&2
         return
     fi
-    echo "[INFO] Downloading yq ${yqVersion} to SHARED_DIR"
+    echo "[INFO] Downloading yq ${yqVersion} to SHARED_DIR" >&2
     curl -fsSL \
         "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_amd64" \
         -o "${yqBin}"
     chmod +x "${yqBin}"
-    echo "[INFO] yq installed: $(${yqBin} --version)"
+    echo "[INFO] yq installed: $(${yqBin} --version)" >&2
 }
 
 #=====================
@@ -125,7 +125,7 @@ EOF
     cp "${HOME}/.aws/credentials" "${awsTmpCreds}"
 
     set -x
-    echo "[INFO] AWS credentials written to ~/.aws/credentials"
+    echo "[INFO] AWS credentials written to ~/.aws/credentials" >&2
 }
 
 #=====================
@@ -159,7 +159,7 @@ LoadSpokeConfig() {
         spokeMetadataFiles+=("${metaFile}")
         spokeNames+=("$(cat "${nameFile}")")
 
-        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}"
+        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}" >&2
     done
 }
 
@@ -187,13 +187,13 @@ PrepareAwsCluster() {
         exit 1
     fi
 
-    echo "[INFO] Running subctl cloud prepare aws for spoke '${spokeName}' (infraID=${infraId}, region=${region})"
+    echo "[INFO] Running subctl cloud prepare aws for spoke '${spokeName}' (infraID=${infraId}, region=${region})" >&2
     "${subctlBin}" cloud prepare aws \
         --kubeconfig "${kubeconfig}" \
         --ocp-metadata "${metadataFile}" \
         --region "${region}" \
         --infra-id "${infraId}"
-    echo "[INFO] cloud prepare complete for spoke '${spokeName}'"
+    echo "[INFO] cloud prepare complete for spoke '${spokeName}'" >&2
 }
 
 #=====================
@@ -203,30 +203,22 @@ LabelGatewayNode() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Selecting gateway node for spoke '${spokeName}'"
+    echo "[INFO] Selecting gateway node for spoke '${spokeName}'" >&2
+    # The Kubernetes API does not support JSONPath field selectors for status.conditions;
+    # pick the first worker node and rely on subctl/OVN to handle any not-Ready edge cases.
     typeset gatewayNode
     gatewayNode="$(
         KUBECONFIG="${kubeconfig}" oc get nodes \
             -l node-role.kubernetes.io/worker \
-            --field-selector='status.conditions[?(@.type=="Ready")].status=True' \
-            -o jsonpath='{.items[0].metadata.name}' || true
+            -o jsonpath='{.items[0].metadata.name}'
     )"
-
-    if [[ -z "${gatewayNode}" ]]; then
-        # Fallback: pick the first worker even without Ready field selector (field selectors for conditions can vary)
-        gatewayNode="$(
-            KUBECONFIG="${kubeconfig}" oc get nodes \
-                -l node-role.kubernetes.io/worker \
-                -o jsonpath='{.items[0].metadata.name}'
-        )"
-    fi
 
     if [[ -z "${gatewayNode}" ]]; then
         echo "[FATAL] Could not find a worker node on spoke '${spokeName}'" >&2
         exit 1
     fi
 
-    echo "[INFO] Labeling '${gatewayNode}' as Submariner gateway on spoke '${spokeName}'"
+    echo "[INFO] Labeling '${gatewayNode}' as Submariner gateway on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc label node "${gatewayNode}" \
         submariner.io/gateway=true \
         --overwrite
@@ -234,7 +226,7 @@ LabelGatewayNode() {
     KUBECONFIG="${kubeconfig}" oc adm taint node "${gatewayNode}" \
         node-role.kubernetes.io/infra:NoSchedule- || true
 
-    echo "[INFO] Gateway node labeled: ${gatewayNode}"
+    echo "[INFO] Gateway node labeled: ${gatewayNode}" >&2
 }
 
 #=====================
@@ -261,5 +253,5 @@ for ((i = 0; i < spokeCount; i++)); do
     LabelGatewayNode "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done
 
-echo "[INFO] Cloud prepare and gateway labeling complete"
+echo "[INFO] Cloud prepare and gateway labeling complete" >&2
 true

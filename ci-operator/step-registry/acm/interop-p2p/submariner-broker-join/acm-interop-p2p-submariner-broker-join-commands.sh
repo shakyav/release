@@ -63,7 +63,7 @@ LoadSpokeConfig() {
 
         spokeKubeconfigs+=("${kcFile}")
         spokeNames+=("$(cat "${nameFile}")")
-        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}"
+        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}" >&2
     done
 }
 
@@ -71,12 +71,12 @@ LoadSpokeConfig() {
 # DeployBroker — deploy Submariner broker on hub
 #=====================
 DeployBroker() {
-    echo "[INFO] Deploying Submariner broker on hub cluster"
+    echo "[INFO] Deploying Submariner broker on hub cluster" >&2
     "${subctlBin}" deploy-broker \
         --kubeconfig "${KUBECONFIG}" \
         --globalnet \
         --broker-info-file "${brokerInfoFile}"
-    echo "[INFO] Broker deployed, broker-info written to ${brokerInfoFile}"
+    echo "[INFO] Broker deployed, broker-info written to ${brokerInfoFile}" >&2
 }
 
 #=====================
@@ -86,13 +86,13 @@ JoinCluster() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Joining spoke '${spokeName}' to broker"
+    echo "[INFO] Joining spoke '${spokeName}' to broker" >&2
     "${subctlBin}" join \
         --kubeconfig "${kubeconfig}" \
         --clusterid "${spokeName}" \
         --natt=false \
         "${brokerInfoFile}"
-    echo "[INFO] Join initiated for spoke '${spokeName}'"
+    echo "[INFO] Join initiated for spoke '${spokeName}'" >&2
 }
 
 #=====================
@@ -102,11 +102,11 @@ WaitSubmarinerReady() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Waiting for submariner-gateway DaemonSet on spoke '${spokeName}'"
+    echo "[INFO] Waiting for submariner-gateway DaemonSet on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-gateway \
         -n submariner-operator \
         --timeout=10m
-    echo "[INFO] submariner-gateway ready on spoke '${spokeName}'"
+    echo "[INFO] submariner-gateway ready on spoke '${spokeName}'" >&2
 }
 
 #=====================
@@ -116,22 +116,22 @@ WaitAllSubmarinerComponentsReady() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'"
+    echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-globalnet \
         -n submariner-operator \
         --timeout=10m
 
-    echo "[INFO] Waiting for submariner-lighthouse-agent on spoke '${spokeName}'"
+    echo "[INFO] Waiting for submariner-lighthouse-agent on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-agent \
         -n submariner-operator \
         --timeout=10m
 
-    echo "[INFO] Waiting for submariner-lighthouse-coredns on spoke '${spokeName}'"
+    echo "[INFO] Waiting for submariner-lighthouse-coredns on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-coredns \
         -n submariner-operator \
         --timeout=10m
 
-    echo "[INFO] All Submariner components ready on spoke '${spokeName}'"
+    echo "[INFO] All Submariner components ready on spoke '${spokeName}'" >&2
 }
 
 #=====================
@@ -141,7 +141,7 @@ WaitForDnsForwardingConfigured() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Waiting for Lighthouse DNS forwarding in OpenShift CoreDNS on spoke '${spokeName}'"
+    echo "[INFO] Waiting for Lighthouse DNS forwarding in OpenShift CoreDNS on spoke '${spokeName}'" >&2
     typeset -i dnsWait=0
     typeset -i dnsMax=300
 
@@ -150,10 +150,10 @@ WaitForDnsForwardingConfigured() {
                 -n openshift-dns \
                 -o jsonpath='{.data.Corefile}' \
                 | grep -q 'clusterset.local'; then
-            echo "[INFO] Lighthouse DNS stub zone found in dns-default on spoke '${spokeName}' after ${dnsWait}s"
+            echo "[INFO] Lighthouse DNS stub zone found in dns-default on spoke '${spokeName}' after ${dnsWait}s" >&2
             break
         fi
-        echo "[INFO]   clusterset.local not yet in CoreDNS config on '${spokeName}' (${dnsWait}/${dnsMax}s)"
+        echo "[INFO]   clusterset.local not yet in CoreDNS config on '${spokeName}' (${dnsWait}/${dnsMax}s)" >&2
         sleep 15
         (( dnsWait += 15 ))
     done
@@ -168,11 +168,11 @@ WaitForDnsForwardingConfigured() {
     fi
 
     # Wait for the dns DaemonSet to roll out with the new config
-    echo "[INFO] Rolling out updated dns DaemonSet on spoke '${spokeName}'"
+    echo "[INFO] Rolling out updated dns DaemonSet on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/dns-default \
         -n openshift-dns \
         --timeout=10m
-    echo "[INFO] CoreDNS DNS forwarding rollout complete on spoke '${spokeName}'"
+    echo "[INFO] CoreDNS DNS forwarding rollout complete on spoke '${spokeName}'" >&2
 }
 
 #=====================
@@ -209,5 +209,5 @@ for ((i = 0; i < spokeCount; i++)); do
         "${spokeNames[i]}"
 done
 
-echo "[INFO] Submariner broker deploy, join, and readiness checks complete"
+echo "[INFO] Submariner broker deploy, join, and readiness checks complete" >&2
 true

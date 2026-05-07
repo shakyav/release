@@ -55,7 +55,7 @@ LoadSpokeConfig() {
 
         spokeKubeconfigs+=("${kcFile}")
         spokeNames+=("$(cat "${nameFile}")")
-        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}"
+        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}" >&2
     done
 }
 
@@ -73,10 +73,10 @@ VerifyNginxConnectivity() {
     typeset sourceCluster="$3"
     typeset targetCluster="$4"
 
-    echo "[INFO] === Nginx connectivity: ${sourceCluster} -> ${targetCluster} ==="
+    echo "[INFO] === Nginx connectivity: ${sourceCluster} -> ${targetCluster} ===" >&2
 
     # Deploy nginx on source cluster
-    echo "[INFO] Deploying nginx on '${sourceCluster}'"
+    echo "[INFO] Deploying nginx on '${sourceCluster}'" >&2
     KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
 apiVersion: v1
 kind: Pod
@@ -107,13 +107,13 @@ spec:
     targetPort: 8080
 EOF
 
-    echo "[INFO] Waiting for nginx Pod to be Running on '${sourceCluster}'"
+    echo "[INFO] Waiting for nginx Pod to be Running on '${sourceCluster}'" >&2
     KUBECONFIG="${kcSource}" oc -n default wait pod/nginx \
         --for condition=Ready \
         --timeout=3m
 
     # Export the service for cross-cluster discovery
-    echo "[INFO] Creating ServiceExport for nginx on '${sourceCluster}'"
+    echo "[INFO] Creating ServiceExport for nginx on '${sourceCluster}'" >&2
     KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
 apiVersion: multicluster.x-k8s.io/v1alpha1
 kind: ServiceExport
@@ -125,13 +125,13 @@ EOF
     # Wait for ServiceImport to propagate to target cluster
     typeset -i siWait=0
     typeset -i siMax=180
-    echo "[INFO] Waiting for ServiceImport 'nginx' on '${targetCluster}' (timeout=${siMax}s)"
+    echo "[INFO] Waiting for ServiceImport 'nginx' on '${targetCluster}' (timeout=${siMax}s)" >&2
     while (( siWait < siMax )); do
         if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null; then
-            echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s"
+            echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s" >&2
             break
         fi
-        echo "[INFO]   ServiceImport not yet available (${siWait}/${siMax}s elapsed)"
+        echo "[INFO]   ServiceImport not yet available (${siWait}/${siMax}s elapsed)" >&2
         sleep 10
         (( siWait += 10 ))
     done
@@ -151,7 +151,7 @@ EOF
     typeset -i giWait=0
     typeset -i giMax=180
     typeset giIP=""
-    echo "[INFO] Waiting for GlobalIngressIP for nginx service on '${sourceCluster}' (timeout=${giMax}s)"
+    echo "[INFO] Waiting for GlobalIngressIP for nginx service on '${sourceCluster}' (timeout=${giMax}s)" >&2
     while (( giWait < giMax )); do
         giIP="$(
             KUBECONFIG="${kcSource}" oc get globalingressips \
@@ -160,10 +160,10 @@ EOF
                 || true
         )"
         if [[ -n "${giIP}" ]]; then
-            echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)"
+            echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)" >&2
             break
         fi
-        echo "[INFO]   No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)"
+        echo "[INFO]   No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)" >&2
         sleep 10
         (( giWait += 10 ))
     done
@@ -181,7 +181,7 @@ EOF
     KUBECONFIG="${kcTarget}" oc -n default delete pod submariner-nettest \
         --ignore-not-found --grace-period=0 || true
 
-    echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local"
+    echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local" >&2
     KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
         --image=quay.io/submariner/nettest:latest \
         --restart=Never \
@@ -189,7 +189,7 @@ EOF
         curl -v --retry 5 --retry-delay 10 --retry-connrefused \
             "http://nginx.default.svc.clusterset.local:80/"
 
-    echo "[INFO] Waiting for nettest pod to complete on '${targetCluster}'"
+    echo "[INFO] Waiting for nettest pod to complete on '${targetCluster}'" >&2
     KUBECONFIG="${kcTarget}" oc -n default wait pod/submariner-nettest \
         --for condition=Ready \
         --timeout=2m || true
@@ -207,7 +207,7 @@ EOF
         exit 1
     fi
 
-    echo "[INFO] Nginx connectivity verified: ${sourceCluster} -> ${targetCluster}"
+    echo "[INFO] Nginx connectivity verified: ${sourceCluster} -> ${targetCluster}" >&2
 }
 
 #=====================
@@ -220,7 +220,7 @@ WaitGlobalnetHeadlessServiceReady() {
     typeset kubeconfig="$1"
     typeset clusterName="$2"
 
-    echo "[INFO] Checking headless service Globalnet readiness on '${clusterName}'"
+    echo "[INFO] Checking headless service Globalnet readiness on '${clusterName}'" >&2
     typeset -i wait=0
     typeset -i maxWait=180
 
@@ -233,11 +233,11 @@ WaitGlobalnetHeadlessServiceReady() {
                 jq 'length' || echo "0"
         )"
         if (( count > 0 )); then
-            echo "[INFO] ${count} GlobalIngressIP(s) found on '${clusterName}' after ${wait}s"
+            echo "[INFO] ${count} GlobalIngressIP(s) found on '${clusterName}' after ${wait}s" >&2
             KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide || true
             break
         fi
-        echo "[INFO]   No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)"
+        echo "[INFO]   No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)" >&2
         sleep 10
         (( wait += 10 ))
     done
@@ -262,9 +262,9 @@ VerifyConnectivity() {
     typeset name1="$3"
     typeset name2="$4"
 
-    echo "[INFO] Running subctl verify: ${name1} <-> ${name2}"
+    echo "[INFO] Running subctl verify: ${name1} <-> ${name2}" >&2
     "${subctlBin}" verify \
-        --kubecontexts "${kc1},${kc2}" \
+        --kubeconfigs "${kc1},${kc2}" \
         --connection-attempts 3 \
         --connection-timeout 60 \
         --verbose \
@@ -272,7 +272,7 @@ VerifyConnectivity() {
             echo "[ERROR] subctl verify failed between '${name1}' and '${name2}'" >&2
             exit 1
         }
-    echo "[INFO] subctl verify passed: ${name1} <-> ${name2}"
+    echo "[INFO] subctl verify passed: ${name1} <-> ${name2}" >&2
 }
 
 #=====================
@@ -323,5 +323,5 @@ if (( spokeCount >= 2 )); then
         "${spokeNames[1]}"
 fi
 
-echo "[INFO] Submariner connectivity verification complete"
+echo "[INFO] Submariner connectivity verification complete" >&2
 true

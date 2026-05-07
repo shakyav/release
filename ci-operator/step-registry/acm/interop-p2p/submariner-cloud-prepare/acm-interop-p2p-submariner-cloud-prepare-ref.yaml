@@ -1,6 +1,9 @@
 ref:
   as: acm-interop-p2p-submariner-cloud-prepare
-  from: cli
+  from_image:
+    namespace: ocp
+    name: cli-jq
+    tag: latest
   commands: acm-interop-p2p-submariner-cloud-prepare-commands.sh
   resources:
     requests:
