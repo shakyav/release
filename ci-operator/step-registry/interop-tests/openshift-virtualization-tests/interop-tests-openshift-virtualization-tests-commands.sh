@@ -6,51 +6,31 @@
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
-typeset -i startTime=${SECONDS}
+typeset -i startTime=$SECONDS
+
+# This trap will be executed when the script exits for any reason (successful, error, or signal).
+trap 'DebugOnExit' EXIT
 
 # shellcheck disable=SC2329
 DebugOnExit() {
-    typeset -i exitCode="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
-    typeset -i scriptStartTime="${1:?MUST give the script start time.}"; (($#)) && shift
-    typeset -i executionTime=$((SECONDS - scriptStartTime))
-    typeset -i debugThreshold=720 # 12 minutes in seconds
+    typeset -i exitCode=$?
+    typeset -i endTime=$SECONDS
+    typeset -i executionTime=$((endTime - startTime))
     typeset hcoNamespace="openshift-cnv"
-    typeset lockfile=/tmp/debug_marker
-    set +e
 
-    if [[ (${executionTime} -lt ${debugThreshold}) || ${exitCode} -ne 0 ]]; then
-        echo >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) " >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        echo "Entering debug sleep. You can now inspect the system state." >&2
-        echo "Remove the file: ${lockfile}, to continue script execution." >&2
-        echo "PID: $$" >&2
-        echo "Exit Code: ${exitCode}" >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        : "Dump HCO CR and logs for debugging."
+    if (( exitCode != 0 )); then
+        : "SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s, PID: $$, exitCode: ${exitCode})"
         oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
         oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
-        : "Run must-gather for additional debugging information."
         RunMustGather
-        echo "--------------------------------------------------------------------------------" >&2
-        echo "    😴 😴 😴" >&2
-
-        # Use file flag so loop can be interrupted by removing the file
-        touch "${lockfile}"
-        typeset -i attempts=120
-        typeset -i attemptCount=0
-        typeset -i sleepTime=120
-        set +x
-        while [[ -f "${lockfile}" ]]; do
-            sleep "${sleepTime}"
-            ((attemptCount++))
-            if [[ ${attemptCount} -ge ${attempts} ]]; then
-                echo "Timed out waiting for lockfile to be removed." >&2
-                break
-            fi
+        # Loop until the marker file is removed (or Ctrl+C). Each iteration sleeps 120s.
+        # To unblock from outside the pod: rm /tmp/debug_marker
+        # To unblock interactively: Ctrl+C (interrupts the current sleep and exits the trap).
+        : "Entering debug hold — remove /tmp/debug_marker to continue, or press Ctrl+C"
+        touch /tmp/debug_marker
+        while [[ -f /tmp/debug_marker ]]; do
+            sleep 120
         done
-        set -x
     fi
 
     # exit with the original exit code.
