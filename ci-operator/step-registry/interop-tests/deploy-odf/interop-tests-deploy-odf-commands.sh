@@ -15,10 +15,8 @@ trap '
 ' EXIT
 
 if [[ "${ODF_DEPLOY_ON_SPOKE}" == "true" ]]; then
-    [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]] && {
-        echo "[ERROR] ODF_DEPLOY_ON_SPOKE=true but managed-cluster-kubeconfig not found in SHARED_DIR" >&2
-        exit 1
-    }
+    # ODF_DEPLOY_ON_SPOKE=true requires managed-cluster-kubeconfig written by cluster-install step.
+    [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]] && exit 1
     export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 fi
 
@@ -30,15 +28,15 @@ typeset -r odfCatalogImage="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_
 typeset -r odfCatalogName="odf-catalogsource"
 typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
 
-[[ ! -f "${odfQuayCredentialsFile}" ]] && {
-    echo "[ERROR] ODF Quay credentials file not found: ${odfQuayCredentialsFile}" >&2
-    exit 1
-}
+# Credentials file is mounted by CI Operator from the odf-quay-credentials secret.
+[[ ! -f "${odfQuayCredentialsFile}" ]] && exit 1
 
 # Merge cluster pull secret with ODF Quay credentials in memory (no temp files).
+# set +x inside the process substitution suppresses xtrace only for the subshell that
+# runs oc get secret, preventing the decoded pull-secret JSON from appearing in CI logs.
 oc -n openshift-config set data secret/pull-secret \
     --from-file .dockerconfigjson=<(
-        jq '. * input' <(
+        jq '. * input' <(set +x
             oc -n openshift-config get secret/pull-secret \
                 --template='{{index .data ".dockerconfigjson" | base64decode}}'
         ) "${odfQuayCredentialsFile}"
@@ -180,11 +178,11 @@ typeset -i crdMax=300   # 5 minutes
 until oc get crd storageclusters.ocs.openshift.io 1>/dev/null; do
     if (( crdWait >= crdMax )); then
         echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after ${crdMax}s" >&2
-        echo "[DEBUG] OCS/ODF CRDs currently registered:" >&2
+        # OCS/ODF CRDs currently registered:
         oc get crd 2>&1 | grep -Ei 'ocs|odf|storage' || true
-        echo "[DEBUG] CSVs in ${odfInstallNamespace}:" >&2
+        # CSVs in ${odfInstallNamespace}:
         oc -n "${odfInstallNamespace}" get csv -o wide 2>&1 || true
-        echo "[DEBUG] Pods in ${odfInstallNamespace}:" >&2
+        # Pods in ${odfInstallNamespace}:
         oc -n "${odfInstallNamespace}" get pods -o wide 2>&1 || true
         exit 1
     fi
@@ -282,12 +280,12 @@ if ! oc rollout status "daemonset/${rbdDs}" \
         -n "${odfInstallNamespace}" \
         --timeout=30m; then
     echo "[ERROR] Ceph RBD CSI DaemonSet '${rbdDs}' did not roll out cleanly" >&2
-    echo "[DEBUG] DaemonSet pod status:" >&2
+    # DaemonSet pod status:
     oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
     oc -n "${odfInstallNamespace}" get pods \
         -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
         | grep -i plugin >&2 || true
-    echo "[DEBUG] Describe first non-Running CSI pod:" >&2
+    # Describe first non-Running CSI pod:
     oc -n "${odfInstallNamespace}" get pods --no-headers \
         -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
         | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
@@ -299,13 +297,13 @@ typeset -r scTimeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT:-240m}"
 if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
         -n "${odfInstallNamespace}" --for=condition='Available' --timeout="${scTimeout}"; then
     echo "[ERROR] StorageCluster '${ODF_STORAGE_CLUSTER_NAME}' did not reach Available within ${scTimeout}" >&2
-    echo "[DEBUG] StorageCluster conditions:" >&2
+    # StorageCluster conditions:
     oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
         -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' >&2 || true
-    echo "[DEBUG] Non-Running pods in openshift-storage:" >&2
+    # Non-Running pods in openshift-storage:
     oc -n "${odfInstallNamespace}" get pods \
         --field-selector='status.phase!=Running' -o wide >&2 || true
-    echo "[DEBUG] Pending PVCs:" >&2
+    # Pending PVCs:
     oc -n "${odfInstallNamespace}" get pvc \
         --field-selector='status.phase!=Bound' -o wide >&2 || true
     exit 1

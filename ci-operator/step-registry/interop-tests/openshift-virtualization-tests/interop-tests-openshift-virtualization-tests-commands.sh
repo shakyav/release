@@ -6,77 +6,36 @@
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
-typeset -i startTime=${SECONDS}
+typeset -i startTime=$SECONDS
+
+# This trap will be executed when the script exits for any reason (successful, error, or signal).
+trap 'DebugOnExit' EXIT
 
 # shellcheck disable=SC2329
 DebugOnExit() {
-    typeset -i exitCode="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
-    typeset -i scriptStartTime="${1:?MUST give the script start time.}"; (($#)) && shift
-    typeset -i executionTime=$((SECONDS - scriptStartTime))
-    typeset -i debugThreshold=720 # 12 minutes in seconds
+    typeset -i exitCode=$?
+    typeset -i endTime=$SECONDS
+    typeset -i executionTime=$((endTime - startTime))
     typeset hcoNamespace="openshift-cnv"
-    typeset lockfile=/tmp/debug_marker
-    set +e
 
-    if [[ (${executionTime} -lt ${debugThreshold}) || ${exitCode} -ne 0 ]]; then
-        echo >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        echo " SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s) " >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        echo "Entering debug sleep. You can now inspect the system state." >&2
-        echo "Remove the file: ${lockfile}, to continue script execution." >&2
-        echo "PID: $$" >&2
-        echo "Exit Code: ${exitCode}" >&2
-        echo "--------------------------------------------------------------------------------" >&2
-        : "Dump HCO CR and logs for debugging."
+    if (( exitCode != 0 )); then
+        : "SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s, PID: $$, exitCode: ${exitCode})"
         oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
         oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
-        : "Run must-gather for additional debugging information."
         RunMustGather
-        echo "--------------------------------------------------------------------------------" >&2
-        echo "    😴 😴 😴" >&2
-
-        # Use file flag so loop can be interrupted by removing the file
-        touch "${lockfile}"
-        typeset -i attempts=120
-        typeset -i attemptCount=0
-        typeset -i sleepTime=120
-        set +x
-        while [[ -f "${lockfile}" ]]; do
-            sleep "${sleepTime}"
-            ((attemptCount++))
-            if [[ ${attemptCount} -ge ${attempts} ]]; then
-                echo "Timed out waiting for lockfile to be removed." >&2
-                break
-            fi
+        # Loop until the marker file is removed (or Ctrl+C). Each iteration sleeps 120s.
+        # To unblock from outside the pod: rm /tmp/debug_marker
+        # To unblock interactively: Ctrl+C (interrupts the current sleep and exits the trap).
+        : "Entering debug hold — remove /tmp/debug_marker to continue, or press Ctrl+C"
+        touch /tmp/debug_marker
+        while [[ -f /tmp/debug_marker ]]; do
+            sleep 120
         done
-        set -x
     fi
 
     # exit with the original exit code.
     exit "${exitCode}"
 }
-
-if [[ "${MAP_TESTS}" == "true" ]]; then
-    # Map results by setting identifier prefix in tests suites names for reporting tools
-    # Merge original results into a single file and compress
-    # Send modified file to shared dir for Data Router Reporter step (run here so EXIT stays DebugOnExit).
-    eval "$(
-        typeset -a _fURL=()
-        type -t wget 1>/dev/null && _fURL=(wget -qO-) || _fURL=(curl -fsSL)
-        "${_fURL[@]}" \
-            curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/ci-operator/interop/common/ExitTrap--PostProcessPrep.sh
-    )"
-    # shellcheck disable=SC2154
-    trap '
-        typeset -i ec=$?
-        LP_IO__ET_PPP__NEW_TS_NAME="${DR__RP__CR_COMP_NAME}--%s" \
-            ExitTrap--PostProcessPrep junit--cnv__interop-tests__openshift-virtualization-tests.xml || true
-        DebugOnExit "${ec}" "${startTime}"
-    ' EXIT
-else
-    trap 'DebugOnExit "$?" "${startTime}"' EXIT
-fi
 
 SetDefaultStorageClass() {
     typeset storageClassName="${1:?}"; (($#)) && shift
@@ -110,6 +69,7 @@ RunMustGather() {
 
     mkdir -p "${mustGatherCnvDir}"
     oc adm must-gather --dest-dir="${mustGatherCnvDir}" --image="${image}" -- /usr/bin/gather --vms_details | tee "${mustGatherCnvDir}"/must-gather-cnv.log || true
+    # tar -czf must-gather-cnv.tar.gz must-gather-cnv || true
     true
 }
 
@@ -126,7 +86,6 @@ Retry() {
             : "Command failed. Attempt ${count}/${maxRetries}. Retrying in ${delay} seconds..."
             sleep "${delay}"
         else
-            : "Command failed after ${maxRetries} attempts."
             return "${lastExitCode}"
         fi
     done
@@ -186,7 +145,7 @@ Cnv__ReimportDatavolumes() {
             : "Successfully deleted all volumesnapshots"
             break
         else
-            echo "Failed to delete some volumesnapshots. Trying to send dummy annotation to all dangling volumesnapshots" >&2
+            : "Failed to delete some volumesnapshots. Trying to send dummy annotation to all dangling volumesnapshots"
             retryCount=$((retryCount + 1))
 
             # send dummy-annotation so the CSI-sidecar will send a DeleteSnapshot RPC
@@ -199,7 +158,7 @@ Cnv__ReimportDatavolumes() {
     done
 
     if (( retryCount >= maxRetries )); then
-        echo "failed to delete all volumesnapshot after ${maxRetries} attempts." >&2
+        : "Failed to delete all volumesnapshots after ${maxRetries} attempts"
         exit 1
     fi
 
@@ -213,20 +172,58 @@ Cnv__ReimportDatavolumes() {
     true
 }
 
-# Install and verify virtctl (same approach as redhat-lp-chaos)
+MapTestsForComponentReadiness() {
+    [[ "${MAP_TESTS}" != "true" ]] && return
+
+    typeset resultsFile="${1:-}"
+    : "Patching Tests Result File: ${resultsFile}"
+    if [[ -f "${resultsFile}" ]]; then
+        eval "$(
+            curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+        )"; EnsureReqs yq
+        # Map testsuite name to CNV-lp-interop for Component Readiness.
+        yq eval -px -ox -iI0 '.testsuites.testsuite.+@name="CNV-lp-interop"' "${resultsFile}"
+    fi
+    true
+}
+
+# Restart the RBD CSI controller deployment and node plugin DaemonSet to flush any stale
+# in-flight operation locks before DataVolume/PVC operations. Without this, operations can hit:
+#   "rpc error: code = Aborted desc = an operation with the given Volume ID … already exists"
+#
+# Two distinct lock scopes require two distinct restarts:
+#   - ctrlplugin (controller deployment): holds csi-provisioner in-flight context for
+#     volume CREATE/DELETE/CLONE operations. Stale if the provisioner pod previously crashed.
+#   - nodeplugin (DaemonSet): holds per-node in-flight context for MapVolume.SetUpDevice
+#     (volume attach/map) and NodeStageVolume. Stale locks here block VM live migration
+#     because the migration target pod cannot attach the volume on the target node.
+#
+# Component name changed in ODF 4.14+:
+#   Old (<=4.13): csi-rbdplugin-provisioner / csi-rbdplugin
+#   New (>=4.14): openshift-storage.rbd.csi.ceph.com-ctrlplugin / openshift-storage.rbd.csi.ceph.com-nodeplugin
+WaitOdfCsiHealthy() {
+    typeset -r odfNs="openshift-storage"
+    typeset -r rbdDeploy="openshift-storage.rbd.csi.ceph.com-ctrlplugin"
+    typeset -r rbdNodeDs="openshift-storage.rbd.csi.ceph.com-nodeplugin"
+    oc -n "${odfNs}" rollout restart "deployment/${rbdDeploy}"
+    oc -n "${odfNs}" rollout status "deployment/${rbdDeploy}" --timeout=5m
+    oc -n "${odfNs}" rollout restart "daemonset/${rbdNodeDs}"
+    oc -n "${odfNs}" rollout status "daemonset/${rbdNodeDs}" --timeout=10m
+    true
+}
+
 InstallAndVerifyVirtctl() {
     [[ "${CNV_TESTS_UPGRADE_ONLY}" != "true" ]] && return
 
     typeset baseURL
+    # oc get ingress.config.openshift.io/cluster failure is self-evident in xtrace; exit 1 signals the fatal condition.
     if ! baseURL="$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}' | tr -d '\n\r')"; then
-        echo "FATAL ERROR: Failed to get OpenShift cluster base domain." >&2
         exit 1
     fi
 
     typeset dlURL="https://hyperconverged-cluster-cli-download-openshift-cnv.${baseURL}/amd64/linux/virtctl.tar.gz"
     # No tar -v: keep CI logs smaller (MPEX Section0).
     if ! curl -kfsSL "${dlURL}" | tar -xzf - -C "${binFolder}"; then
-        echo "FATAL ERROR: Failed to download and extract virtctl." >&2
         exit 1
     fi
 
@@ -240,7 +237,6 @@ InstallAndVerifyVirtctl() {
     fi
 
     if ! virtctl version --client; then
-        echo "FATAL ERROR: virtctl installed but failed to execute after setup." >&2
         exit 1
     fi
     true
@@ -281,10 +277,8 @@ unset KUBERNETES_PORT_443_TCP_PORT
 curl -sL "${ocUrl}" | tar -C "${binFolder}" -xzf - oc
 
 if [[ "${CNV_TESTS_UPGRADE_ONLY}" == "true" ]]; then
-    if [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]]; then
-        echo "[ERROR] CNV_TESTS_UPGRADE_ONLY=true but ${SHARED_DIR}/managed-cluster-kubeconfig not found" >&2
-        exit 1
-    fi
+    # CNV_TESTS_UPGRADE_ONLY=true requires managed-cluster-kubeconfig written by cluster-install step.
+    [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
     export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 fi
 
@@ -295,19 +289,61 @@ hcoSubscription="$(oc get subscription.operators.coreos.com -n openshift-cnv -o 
 oc get sc # Before
 SetDefaultStorageClass 'ocs-storagecluster-ceph-rbd-virtualization'
 oc get sc # After
+WaitOdfCsiHealthy
 Cnv__ReimportDatavolumes
+# Reimport runs CDI importer pods that attach/detach RBD volumes on nodes, which can leave
+# stale in-flight locks in the CSI node plugin. Flush them before tests run migrations.
+WaitOdfCsiHealthy
 
 InstallAndVerifyVirtctl
 
 typeset -i exitCode=0
 
 if [[ "${CNV_TESTS_UPGRADE_ONLY}" == "true" ]]; then
+    # Build a "tagged+digest" image reference for --ocp-image.
+    #
+    # Why tagged+digest and not pure digest?
+    # The CNV test framework's extract_ocp_version_from_ocp_image() (utils.py) extracts the
+    # OCP version by parsing the tag portion of the URL (e.g. "4.21.0-rc.2-x86_64"). A pure
+    # digest URL (repo@sha256:...) has no tag, so extraction fails with:
+    #   "Cannot extract OCP version. OCP image url: ... is invalid"
+    #
+    # Why not pure tag?
+    # A tagged URL triggers "release images that are not accessed via digest cannot be
+    # verified" in oc adm upgrade, which keeps clusterversion state as Partial.
+    #
+    # Solution: the "tagged+digest" form (repo:version@sha256:digest) satisfies both
+    # requirements: CNV test can extract the version from the tag, and OCP uses the digest
+    # for image verification. This is a fully valid OCI canonical reference.
+    typeset releaseInfoJson imgRepo upgVersion upgImgDigest
+    releaseInfoJson="$(oc adm release info "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" -o json)"
+    upgVersion="$(jq -r '.metadata.version' <<<"${releaseInfoJson}")"
+    upgImgDigest="$(jq -r '.digest'          <<<"${releaseInfoJson}")"
+    [[ -n "${upgVersion}" ]]
+    [[ -n "${upgImgDigest}" ]]
+    # Strip tag (:...) or digest (@sha256...) suffix to obtain the bare registry/repo path.
+    imgRepo="${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE%:*}"
+    imgRepo="${imgRepo%@sha256*}"
+    typeset ocpImageByDigest="${imgRepo}:${upgVersion}@${upgImgDigest}"
+
+    # AdminAck: the spoke cluster has mirror registries configured. OCP 4.21 mandates
+    # Sigstore signature images in those mirrors. Without the admin-ack the upgrade is
+    # technically blocked (it can be forced, but `state` stays `Partial` indefinitely).
+    # Patching the ConfigMap satisfies the gate before the CNV test framework triggers
+    # the upgrade, allowing the clusterversion to proceed past `Partial` to `Completed`.
+    # Key name format: ack-<from-version>-<feature>. Retrieve the exact key from:
+    #   oc get clusterversion version -o jsonpath='{.status.conditions[?(@.type=="Upgradeable")].message}'
+    oc patch configmap admin-acks-upgrades -n openshift-config \
+        --type merge \
+        --patch '{"data":{"ack-4.21-rhcos-4.21-sigstore-image-requirements":"true"}}' \
+        || : "admin-acks-upgrades patch skipped (ConfigMap may not exist on this cluster)"
+
     uv --verbose --cache-dir /tmp/uv-cache \
         run pytest -o cache_dir=/tmp/pytest-cache \
         -s \
         -o log_cli=true \
         --upgrade=ocp \
-        --ocp-image "${ORIGINAL_RELEASE_IMAGE_LATEST}" \
+        --ocp-image "${ocpImageByDigest}" \
         --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
         --junitxml="${JUNIT_RESULTS_FILE}" \
         --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
@@ -337,6 +373,7 @@ else
         || exitCode=$?
 fi
 
+MapTestsForComponentReadiness "${JUNIT_RESULTS_FILE}"
 
 # Send junit file to shared dir for Data Router Reporter step.
 # Guard the copy: pytest may not produce the file when it fails before the collection phase.
