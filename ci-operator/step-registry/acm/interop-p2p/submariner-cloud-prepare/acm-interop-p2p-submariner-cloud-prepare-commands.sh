@@ -76,9 +76,11 @@ InstallYq() {
         echo "[INFO] yq already present in SHARED_DIR, skipping download" >&2
         return
     fi
-    echo "[INFO] Downloading yq ${yqVersion} to SHARED_DIR" >&2
+    typeset yqArch
+    yqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
+    echo "[INFO] Downloading yq ${yqVersion} (${yqArch}) to SHARED_DIR" >&2
     curl -fsSL \
-        "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_amd64" \
+        "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_${yqArch}" \
         -o "${yqBin}"
     chmod +x "${yqBin}"
     echo "[INFO] yq installed: $(${yqBin} --version)" >&2
@@ -183,21 +185,72 @@ PrepareAwsCluster() {
 }
 
 #=====================
-# LabelGatewayNode — label first Ready worker node as Submariner gateway
+# LabelGatewayNode — label the subctl-deployed gateway node as Submariner gateway
 #=====================
+# 'subctl cloud prepare aws' creates a dedicated MachineSet in the public subnet
+# (name contains 'submariner').  The node created by that MachineSet has the public
+# IP and is in the security group that subctl configured.  Labeling any other worker
+# (e.g. items[0]) puts the gateway pod on a private-subnet node that can never
+# establish cross-region IPsec tunnels.
 LabelGatewayNode() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Selecting gateway node for spoke '${spokeName}'" >&2
-    # The Kubernetes API does not support JSONPath field selectors for status.conditions;
-    # pick the first worker node and rely on subctl/OVN to handle any not-Ready edge cases.
-    typeset gatewayNode
-    gatewayNode="$(
-        KUBECONFIG="${kubeconfig}" oc get nodes \
-            -l node-role.kubernetes.io/worker \
-            -o jsonpath='{.items[0].metadata.name}'
+    echo "[INFO] Finding subctl gateway MachineSet on spoke '${spokeName}'" >&2
+    typeset gwMachineSet
+    gwMachineSet="$(
+        KUBECONFIG="${kubeconfig}" oc get machineset \
+            -n openshift-machine-api \
+            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null |
+        tr ' ' '\n' |
+        grep -i 'submariner' |
+        head -1 || true
     )"
+
+    typeset gatewayNode=''
+
+    if [[ -n "${gwMachineSet}" ]]; then
+        echo "[INFO] Found submariner MachineSet: ${gwMachineSet}" >&2
+
+        # Wait for the MachineSet to report readyReplicas=1 (new node joined and is Ready).
+        # oc wait --for=jsonpath is used here because readyReplicas is a known target value.
+        typeset -i gwWait=0 gwMax=600   # 10 min
+        until (( gwWait >= gwMax )); do
+            typeset readyReplicas
+            readyReplicas="$(
+                KUBECONFIG="${kubeconfig}" oc get machineset "${gwMachineSet}" \
+                    -n openshift-machine-api \
+                    -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo '0'
+            )"
+            [[ "${readyReplicas}" == "1" ]] && break
+            : "Waiting for MachineSet ${gwMachineSet} readyReplicas=1 (${gwWait}/${gwMax}s)"
+            sleep 15
+            (( gwWait += 15 ))
+        done
+
+        if (( gwWait >= gwMax )); then
+            echo "[WARN] MachineSet ${gwMachineSet} did not reach readyReplicas=1 within ${gwMax}s; falling back to first worker" >&2
+        else
+            # The node created by the MachineSet carries the label
+            # machine.openshift.io/cluster-api-machineset=<machineset-name>.
+            gatewayNode="$(
+                KUBECONFIG="${kubeconfig}" oc get node \
+                    -l "machine.openshift.io/cluster-api-machineset=${gwMachineSet}" \
+                    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+            )"
+        fi
+    else
+        echo "[WARN] No submariner MachineSet found on spoke '${spokeName}'; falling back to first worker" >&2
+    fi
+
+    # Fallback: first worker node (pre-subctl behaviour, retained for non-OCP environments).
+    if [[ -z "${gatewayNode}" ]]; then
+        gatewayNode="$(
+            KUBECONFIG="${kubeconfig}" oc get nodes \
+                -l node-role.kubernetes.io/worker \
+                -o jsonpath='{.items[0].metadata.name}'
+        )"
+    fi
 
     if [[ -z "${gatewayNode}" ]]; then
         echo "[FATAL] Could not find a worker node on spoke '${spokeName}'" >&2
@@ -209,8 +262,10 @@ LabelGatewayNode() {
         submariner.io/gateway=true \
         --overwrite
 
+    # Remove the infra taint if present so that Submariner gateway pods can schedule.
+    # subctl may or may not add this taint depending on version; || true handles absence.
     KUBECONFIG="${kubeconfig}" oc adm taint node "${gatewayNode}" \
-        node-role.kubernetes.io/infra:NoSchedule- || true
+        node-role.kubernetes.io/infra:NoSchedule- 2>/dev/null || true
 
     echo "[INFO] Gateway node labeled: ${gatewayNode}" >&2
 }
