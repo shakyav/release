@@ -143,55 +143,65 @@ spec:
 ocEOF
 )"
 
-# Poll for installedCSV (20 min): 'oc wait' cannot test for a non-empty value, and the CSV
-# name is not known in advance so a loop is required. Use the fully-qualified resource type
-# to avoid collision with the ACM subscriptions CRD when ACM is installed on the same cluster.
-# Transient "not found" stderr from oc get is expected while the Subscription is being created;
-# || true suppresses the non-zero exit without hiding real failures.
+# Monitor operator installation — two phases.
+#
+# Phase 1 — Subscription registration (5 min): poll until OLM populates installedCSV.
+# 'oc wait' cannot test for a non-empty value (--for=jsonpath requires a known exact value),
+# so a loop is required. Use the fully-qualified resource type to avoid collision with the ACM
+# subscriptions CRD when ACM is installed on the same cluster. Transient "not found" stderr
+# is expected while the Subscription is being reconciled; || true suppresses it without hiding
+# real failures. $SECONDS is used for timing to avoid manual date +%s arithmetic; wStart
+# captures the current value so the parent shell's SECONDS counter is unaffected.
 typeset csvName=''
-typeset -i csvDeadline
-typeset -i tNow; tNow=$(date +%s)
-(( csvDeadline = tNow + 1200 ))
+typeset -i wStart=$SECONDS wInt=10 wMax=300
 until [[ -n "${csvName}" ]]; do
     csvName="$(oc -n "${odfInstallNamespace}" \
-        get subscriptions.operators.coreos.com "${subscriptionName}" \
-        -o jsonpath='{.status.installedCSV}' || true)"
+        get "subscriptions.operators.coreos.com/${subscriptionName}" \
+        -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
     if [[ -z "${csvName}" ]]; then
-        tNow=$(date +%s)
-        if (( tNow >= csvDeadline )); then
-            echo "[ERROR] Timed out (20m) waiting for subscription '${subscriptionName}' to install CSV" >&2
-            # Dump state for diagnostics before exiting.
-            oc -n "${odfInstallNamespace}" get subscriptions.operators.coreos.com "${subscriptionName}" -o yaml >&2 || true
+        if (( SECONDS - wStart >= wMax )); then
+            echo "[ERROR] Timed out (${wMax}s) waiting for subscription '${subscriptionName}' to register a CSV" >&2
+            oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml >&2 || true
             oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml >&2 || true
             oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
             exit 1
         fi
-        sleep 10
+        : "Waiting for subscription installedCSV ($((SECONDS - wStart))/${wMax}s)"
+        sleep "${wInt}"
     fi
 done
+: "OLM registered CSV: ${csvName}"
+
+# Phase 2 — CSV installation (15 min): oc wait until the CSV reaches Succeeded.
+# The CSV name is now known, so --for=jsonpath with the exact expected value is possible.
+# This phase catches OLM install failures that registering installedCSV alone does not.
+if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
+        --for=jsonpath='{.status.phase}'=Succeeded \
+        --timeout=15m; then
+    echo "[ERROR] CSV '${csvName}' did not reach Succeeded within 15m" >&2
+    oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
+    exit 1
+fi
 : "OLM installed CSV: ${csvName}"
 
-# Wait for storageclusters.ocs.openshift.io CRD: poll until the object exists (phase 1),
-# then oc wait for Established (phase 2) — oc wait requires the object to already exist.
-typeset -i crdWait=0
-typeset -i crdMax=300   # 5 minutes
-until oc get crd storageclusters.ocs.openshift.io 1>/dev/null; do
-    if (( crdWait >= crdMax )); then
-        echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after ${crdMax}s" >&2
-        # OCS/ODF CRDs currently registered:
-        oc get crd 2>&1 | grep -Ei 'ocs|odf|storage' || true
-        # CSVs in ${odfInstallNamespace}:
-        oc -n "${odfInstallNamespace}" get csv -o wide 2>&1 || true
-        # Pods in ${odfInstallNamespace}:
-        oc -n "${odfInstallNamespace}" get pods -o wide 2>&1 || true
-        exit 1
-    fi
-    : "  CRD not yet registered (${crdWait}/${crdMax}s elapsed)"
-    sleep 10
-    (( crdWait += 10 ))
-done
-: "CRD storageclusters.ocs.openshift.io registered after ${crdWait}s — waiting for Established"
-oc wait crd storageclusters.ocs.openshift.io \
+# Wait for the storageclusters.ocs.openshift.io CRD to appear (phase 1), then wait for it
+# to be Established (phase 2). --for=create (available since k8s 1.27 / OCP 4.20) blocks
+# until the object exists, cleanly replacing a manual polling loop. --for=condition=Established
+# then confirms the API server has fully registered the resource type — which is the actual
+# gate before a StorageCluster object can be created.
+if ! oc wait --for=create \
+        crd/storageclusters.ocs.openshift.io \
+        --timeout=5m; then
+    echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after 5m" >&2
+    # OCS/ODF CRDs currently registered:
+    oc get crd 2>&1 | grep -Ei 'ocs|odf|storage' || true
+    # CSVs in ${odfInstallNamespace}:
+    oc -n "${odfInstallNamespace}" get csv -o wide 2>&1 || true
+    # Pods in ${odfInstallNamespace}:
+    oc -n "${odfInstallNamespace}" get pods -o wide 2>&1 || true
+    exit 1
+fi
+oc wait crd/storageclusters.ocs.openshift.io \
     --for=condition='Established' \
     --timeout='2m'
 
@@ -251,29 +261,24 @@ ocEOF
 # ContainerCreating will block Ceph OSD join → NooBaa PVC provisioning → StorageCluster
 # Available, but only surfaces as a timeout 180 minutes later. Catching it here fails fast
 # with actionable output.
-typeset rbdDs=""
+#
+# ODF names the RBD CSI node-plugin DaemonSet deterministically: <namespace>.rbd.csi.ceph.com-nodeplugin.
+# Using the known name avoids complex jsonpath discovery and makes the intent explicit.
+# oc wait cannot replace the existence loop — it exits immediately with an error if the
+# resource is absent, rather than polling until it appears.
+typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
 typeset -i rbdWait=0
 typeset -i rbdMax=1800
-until [[ -n "${rbdDs}" ]]; do
-    rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
-        -o jsonpath='{.items[?(@.spec.selector.matchLabels.app=="rook-ceph-csi")].metadata.name}' \
-        || true)"
-    # Fallback: match any DaemonSet whose name contains 'rbd' and 'plugin'
-    if [[ -z "${rbdDs}" ]]; then
-        rbdDs="$(oc -n "${odfInstallNamespace}" get daemonset \
-            -o jsonpath='{.items[*].metadata.name}' \
-            | tr ' ' '\n' | grep -m1 'rbd.*plugin\|rbdplugin' || true)"
+until oc -n "${odfInstallNamespace}" get "daemonset/${rbdDs}" 1>/dev/null 2>&1; do
+    if (( rbdWait >= rbdMax )); then
+        echo "[ERROR] DaemonSet ${rbdDs} not found in ${odfInstallNamespace} after ${rbdMax}s" >&2
+        oc -n "${odfInstallNamespace}" get daemonset -o wide >&2 || true
+        oc -n "${odfInstallNamespace}" get pods -o wide >&2 || true
+        exit 1
     fi
-    if [[ -z "${rbdDs}" ]]; then
-        if (( rbdWait >= rbdMax )); then
-            echo "[ERROR] Ceph RBD CSI DaemonSet not found in ${odfInstallNamespace} after ${rbdMax}s" >&2
-            oc -n "${odfInstallNamespace}" get daemonset -o wide >&2 || true
-            oc -n "${odfInstallNamespace}" get pods -o wide >&2 || true
-            exit 1
-        fi
-        sleep 15
-        (( rbdWait += 15 ))
-    fi
+    : "Waiting for DaemonSet ${rbdDs} to appear (${rbdWait}/${rbdMax}s)"
+    sleep 15
+    (( rbdWait += 15 ))
 done
 : "Found Ceph RBD CSI DaemonSet: ${rbdDs} (after ${rbdWait}s)"
 if ! oc rollout status "daemonset/${rbdDs}" \
