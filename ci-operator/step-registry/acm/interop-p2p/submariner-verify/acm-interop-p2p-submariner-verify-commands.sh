@@ -243,8 +243,12 @@ WaitGlobalnetHeadlessServiceReady() {
     done
 
     if (( wait >= maxWait )); then
-        echo "[WARN] No GlobalIngressIPs found on '${clusterName}' after ${maxWait}s" >&2
+        echo "[ERROR] No GlobalIngressIPs found on '${clusterName}' after ${maxWait}s" >&2
+        echo "[DEBUG] ServiceExports on '${clusterName}':" >&2
         KUBECONFIG="${kubeconfig}" oc get serviceexports -n default -o wide 2>&1 || true
+        echo "[DEBUG] Submariner GlobalEgressIPs on '${clusterName}':" >&2
+        KUBECONFIG="${kubeconfig}" oc get globalegressips -n default -o wide 2>&1 || true
+        exit 1
     fi
 }
 

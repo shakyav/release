@@ -167,33 +167,18 @@ LoadSpokeConfig() {
 #=====================
 # PrepareAwsCluster — run subctl cloud prepare for one spoke
 #=====================
+# --ocp-metadata already contains infraID and aws.region; subctl reads them
+# directly from the file, so no separate --region / --infra-id flags are needed.
+# See: https://submariner.io/getting-started/quickstart/openshift/globalnet/#prepare-aws-clusters-for-submariner
 PrepareAwsCluster() {
     typeset kubeconfig="$1"
     typeset metadataFile="$2"
     typeset spokeName="$3"
 
-    set +x  # suppress credential-adjacent output while extracting infra info
-    typeset infraId
-    infraId="$(jq -r '.infraID' "${metadataFile}")"
-    typeset region
-    region="$(jq -r '.aws.region' "${metadataFile}")"
-    set -x
-
-    if [[ -z "${infraId}" || "${infraId}" == "null" ]]; then
-        echo "[FATAL] infraID missing in ${metadataFile}" >&2
-        exit 1
-    fi
-    if [[ -z "${region}" || "${region}" == "null" ]]; then
-        echo "[FATAL] region missing in ${metadataFile}" >&2
-        exit 1
-    fi
-
-    echo "[INFO] Running subctl cloud prepare aws for spoke '${spokeName}' (infraID=${infraId}, region=${region})" >&2
+    echo "[INFO] Running subctl cloud prepare aws for spoke '${spokeName}' (metadata=${metadataFile})" >&2
     "${subctlBin}" cloud prepare aws \
         --kubeconfig "${kubeconfig}" \
-        --ocp-metadata "${metadataFile}" \
-        --region "${region}" \
-        --infra-id "${infraId}"
+        --ocp-metadata "${metadataFile}"
     echo "[INFO] cloud prepare complete for spoke '${spokeName}'" >&2
 }
 

@@ -82,6 +82,13 @@ DeployBroker() {
 #=====================
 # JoinCluster — join one spoke to the broker
 #=====================
+# NAT-T is intentionally left enabled (default).
+# Spoke clusters are deployed in separate AWS regions (cross-VPC), so gateway
+# nodes reside in private subnets with no public IPs.  Cross-region IPsec
+# tunnels must traverse the public internet via NAT, which requires NAT
+# traversal to discover the correct external endpoint.  Disabling NAT-T
+# (--natt=false) would cause the tunnel handshake to fail silently for any
+# cross-region spoke pair.
 JoinCluster() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
@@ -90,7 +97,6 @@ JoinCluster() {
     "${subctlBin}" join \
         --kubeconfig "${kubeconfig}" \
         --clusterid "${spokeName}" \
-        --natt=false \
         "${brokerInfoFile}"
     echo "[INFO] Join initiated for spoke '${spokeName}'" >&2
 }
