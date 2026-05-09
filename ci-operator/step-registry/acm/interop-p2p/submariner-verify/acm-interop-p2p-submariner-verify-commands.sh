@@ -19,7 +19,6 @@ set -euxo pipefail; shopt -s inherit_errexit
 # Constants
 #=====================
 typeset -r subctlBin="${SHARED_DIR}/subctl"
-typeset -r yqBin="${SHARED_DIR}/yq"
 typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 
 #=====================
