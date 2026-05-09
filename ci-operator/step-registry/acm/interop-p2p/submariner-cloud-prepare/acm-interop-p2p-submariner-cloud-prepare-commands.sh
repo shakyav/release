@@ -169,23 +169,27 @@ LoadSpokeConfig() {
 #=====================
 # PrepareAwsCluster — open Submariner firewall ports on the spoke cluster
 #=====================
-# Uses --dedicated-gateway=false to avoid "Request entity too large: limit is 3145728".
+# Uses --gateways 0 to avoid "Request entity too large: limit is 3145728".
 #
 # ROOT CAUSE OF THE ERROR:
-#   'subctl cloud prepare aws' (default, --dedicated-gateway=true) creates a new
-#   gateway MachineSet AND copies the 'worker-user-data' secret for it.  In CI
+#   'subctl cloud prepare aws' (default --gateways 1) creates a new gateway
+#   MachineSet AND copies the 'worker-user-data' secret for it.  In CI
 #   environments the Ignition config embedded in that secret contains a very large
 #   pull-secret (credentials for dozens of mirror registries).  The copied secret
 #   exceeds the Kubernetes API server's 3 MB request-body limit.
 #
-# WHY --dedicated-gateway=false IS SUFFICIENT:
-#   With --dedicated-gateway=false subctl opens the required IPsec/NAT-T ports
-#   (UDP 500, UDP 4500, UDP 4900, ESP/IP-50) on the EXISTING worker security group
-#   and skips creating a new MachineSet entirely — so no secret copy is made.
-#   An existing worker node is labeled as the gateway by LabelGatewayNode below.
-#   Submariner's NAT-T mode (enabled by default; --natt=false was removed earlier)
-#   discovers the worker's external IP through the AWS NAT Gateway and uses it for
-#   the cross-region IPsec tunnel, so no dedicated public-subnet node is required.
+# WHY --gateways 0 IS SUFFICIENT:
+#   '--gateways 0' is a documented subctl flag: "Number of dedicated gateways to
+#   deploy (default 1)".  Setting it to 0 skips MachineSet creation entirely —
+#   no secret copy is made.  subctl still opens the required IPsec/NAT-T ports
+#   (UDP 500, UDP 4500, UDP 4900, ESP/IP-50) on the existing worker security group.
+#   An existing worker node is labeled as the Submariner gateway by LabelGatewayNode.
+#   NAT-T mode (enabled by default; --natt=false was removed earlier) discovers the
+#   worker's external IP through the AWS NAT Gateway for cross-region IPsec tunnels.
+#
+# Verified against subctl v0.23.1 help output (from CI build log):
+#   --gateways 0   Number of dedicated gateways to deploy
+#                  (Set to 0 when using --load-balancer mode) (default 1)
 #
 # See: https://submariner.io/getting-started/quickstart/openshift/globalnet/#prepare-aws-clusters-for-submariner
 PrepareAwsCluster() {
@@ -197,21 +201,21 @@ PrepareAwsCluster() {
     "${subctlBin}" cloud prepare aws \
         --kubeconfig "${kubeconfig}" \
         --ocp-metadata "${metadataFile}" \
-        --dedicated-gateway=false
+        --gateways 0
     echo "[INFO] Firewall ports opened for spoke '${spokeName}'" >&2
 }
 
 #=====================
 # LabelGatewayNode — label a worker node as the Submariner gateway
 #=====================
-# Since PrepareAwsCluster uses --dedicated-gateway=false, no dedicated gateway
-# MachineSet is created.  This function labels the first available worker node.
+# Since PrepareAwsCluster uses --gateways 0, no dedicated gateway MachineSet is
+# created.  This function labels the first available worker node as the gateway.
 # Submariner's NAT-T mode handles cross-region connectivity through the AWS NAT
 # Gateway without requiring the gateway node to be in a public subnet.
 #
 # The submariner MachineSet lookup is retained for forward compatibility in case
-# a future change re-enables --dedicated-gateway=true on clusters where the
-# userData secret is small enough to fit within the 3 MB API limit.
+# a future change re-enables --gateways 1 on clusters where the userData secret
+# is small enough to fit within the 3 MB Kubernetes API request-body limit.
 LabelGatewayNode() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
