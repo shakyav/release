@@ -6,8 +6,8 @@
 #   - Deploy the Submariner broker on the hub cluster
 #   - Join each spoke cluster to the broker (subctl join)
 #   - broker-info.subm is kept in /tmp and removed after all joins via trap
-#   - Wait for gateway, globalnet, lighthouse-agent, and lighthouse-coredns
-#     DaemonSets/Deployments to be fully ready on each spoke
+#   - Wait (in order) for: submariner-operator, gateway, routeagent, globalnet,
+#     lighthouse-agent, and lighthouse-coredns to be fully ready on each spoke
 #   - Wait for OpenShift CoreDNS to include Lighthouse DNS forwarding
 #
 # Requires: subctl binary in SHARED_DIR (written by submariner-cloud-prepare)
@@ -26,7 +26,7 @@ typeset -r brokerInfoFile="/tmp/broker-info.subm"
 # CleanupBrokerInfo — remove broker credentials file on EXIT
 #=====================
 CleanupBrokerInfo() {
-    rm -f "${brokerInfoFile}" || true
+    rm -f "${brokerInfoFile}"
 }
 trap CleanupBrokerInfo EXIT
 
@@ -102,13 +102,48 @@ JoinCluster() {
 }
 
 #=====================
+# WaitSubmarinerOperatorReady — wait for the Submariner operator Deployment
+#=====================
+# 'subctl join' installs the operator CSV but returns before the operator pod is Available.
+# All other Submariner DaemonSets and Deployments are created by the operator, so they
+# cannot exist until the operator is Running.  Checking DaemonSets before this point
+# causes 'oc rollout status' to fail immediately with "not found".
+WaitSubmarinerOperatorReady() {
+    typeset kubeconfig="$1"
+    typeset spokeName="$2"
+
+    echo "[INFO] Waiting for submariner-operator Deployment on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait deployment/submariner-operator \
+            -n submariner-operator \
+            --for=condition='Available' \
+            --timeout=10m; then
+        echo "[ERROR] submariner-operator Deployment not Available on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
+    echo "[INFO] submariner-operator ready on spoke '${spokeName}'" >&2
+}
+
+#=====================
 # WaitSubmarinerReady — wait for submariner-gateway DaemonSet on one spoke
 #=====================
+# Two-phase: --for=create waits for the operator to deploy the DaemonSet object,
+# then oc rollout status waits for all pods to be scheduled and Running.
 WaitSubmarinerReady() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
-    echo "[INFO] Waiting for submariner-gateway DaemonSet on spoke '${spokeName}'" >&2
+    echo "[INFO] Waiting for submariner-gateway DaemonSet to appear on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
+            daemonset/submariner-gateway \
+            -n submariner-operator \
+            --timeout=5m; then
+        echo "[ERROR] submariner-gateway DaemonSet not created within 5m on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
+
+    echo "[INFO] Waiting for submariner-gateway DaemonSet rollout on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-gateway \
         -n submariner-operator \
         --timeout=10m
@@ -116,23 +151,64 @@ WaitSubmarinerReady() {
 }
 
 #=====================
-# WaitAllSubmarinerComponentsReady — wait for globalnet, lighthouse-agent, lighthouse-coredns
+# WaitAllSubmarinerComponentsReady — wait for routeagent, globalnet, lighthouse-agent, lighthouse-coredns
 #=====================
+# submariner-routeagent is the most critical missing wait: it runs on EVERY node
+# (not just the gateway) and installs the kernel routes that direct cross-cluster
+# traffic into the IPsec tunnel.  Without routeagent being Ready, pod-to-pod
+# cross-cluster traffic fails even when the gateway tunnel is established.
 WaitAllSubmarinerComponentsReady() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
+    echo "[INFO] Waiting for submariner-routeagent on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
+            daemonset/submariner-routeagent \
+            -n submariner-operator \
+            --timeout=5m; then
+        echo "[ERROR] submariner-routeagent DaemonSet not created within 5m on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
+    KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-routeagent \
+        -n submariner-operator \
+        --timeout=10m
+
     echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
+            daemonset/submariner-globalnet \
+            -n submariner-operator \
+            --timeout=5m; then
+        echo "[ERROR] submariner-globalnet DaemonSet not created within 5m on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-globalnet \
         -n submariner-operator \
         --timeout=10m
 
     echo "[INFO] Waiting for submariner-lighthouse-agent on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
+            deployment/submariner-lighthouse-agent \
+            -n submariner-operator \
+            --timeout=5m; then
+        echo "[ERROR] submariner-lighthouse-agent Deployment not created within 5m on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-agent \
         -n submariner-operator \
         --timeout=10m
 
     echo "[INFO] Waiting for submariner-lighthouse-coredns on spoke '${spokeName}'" >&2
+    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
+            deployment/submariner-lighthouse-coredns \
+            -n submariner-operator \
+            --timeout=5m; then
+        echo "[ERROR] submariner-lighthouse-coredns Deployment not created within 5m on spoke '${spokeName}'" >&2
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
+        exit 1
+    fi
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-coredns \
         -n submariner-operator \
         --timeout=10m
@@ -159,7 +235,7 @@ WaitForDnsForwardingConfigured() {
             echo "[INFO] Lighthouse DNS stub zone found in dns-default on spoke '${spokeName}' after ${dnsWait}s" >&2
             break
         fi
-        echo "[INFO]   clusterset.local not yet in CoreDNS config on '${spokeName}' (${dnsWait}/${dnsMax}s)" >&2
+        : "clusterset.local not yet in CoreDNS config on '${spokeName}' (${dnsWait}/${dnsMax}s)"
         sleep 15
         (( dnsWait += 15 ))
     done
@@ -169,7 +245,7 @@ WaitForDnsForwardingConfigured() {
         echo "[DEBUG] Current dns-default Corefile on '${spokeName}':" >&2
         KUBECONFIG="${kubeconfig}" oc get configmap dns-default \
             -n openshift-dns \
-            -o jsonpath='{.data.Corefile}' 2>&1 || true
+            -o jsonpath='{.data.Corefile}' 2>&1 || echo "[DEBUG] Could not retrieve dns-default Corefile" >&2
         exit 1
     fi
 
@@ -195,16 +271,24 @@ fi
 LoadSpokeConfig
 DeployBroker
 
+# Join all spokes first, then wait — parallelises the operator installation across clusters.
+# broker-info.subm is removed by the EXIT trap when the script exits (not here).
 typeset -i i
 for ((i = 0; i < spokeCount; i++)); do
     JoinCluster "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done
-# broker-info.subm is removed by the EXIT trap here (after all joins are complete)
 
+# Phase 1: operator ready — must precede DaemonSet checks (see WaitSubmarinerOperatorReady).
+for ((i = 0; i < spokeCount; i++)); do
+    WaitSubmarinerOperatorReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
+done
+
+# Phase 2: gateway DaemonSet created and rolled out.
 for ((i = 0; i < spokeCount; i++)); do
     WaitSubmarinerReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done
 
+# Phase 3: routeagent, globalnet, lighthouse-agent, lighthouse-coredns.
 for ((i = 0; i < spokeCount; i++)); do
     WaitAllSubmarinerComponentsReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done

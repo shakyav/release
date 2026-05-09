@@ -30,7 +30,7 @@ typeset awsTmpCreds=""
 CleanupCredentials() {
     set +x
     [[ -n "${awsTmpCreds}" && -f "${awsTmpCreds}" ]] && rm -f "${awsTmpCreds}"
-    rm -f "${HOME}/.aws/credentials" "${HOME}/.aws/config" || true
+    rm -f "${HOME}/.aws/credentials" "${HOME}/.aws/config"
     set -x
 }
 trap CleanupCredentials EXIT
@@ -167,45 +167,72 @@ LoadSpokeConfig() {
 }
 
 #=====================
-# PrepareAwsCluster — run subctl cloud prepare for one spoke
+# PrepareAwsCluster — open Submariner firewall ports on the spoke cluster
 #=====================
-# --ocp-metadata already contains infraID and aws.region; subctl reads them
-# directly from the file, so no separate --region / --infra-id flags are needed.
+# Uses --dedicated-gateway=false to avoid "Request entity too large: limit is 3145728".
+#
+# ROOT CAUSE OF THE ERROR:
+#   'subctl cloud prepare aws' (default, --dedicated-gateway=true) creates a new
+#   gateway MachineSet AND copies the 'worker-user-data' secret for it.  In CI
+#   environments the Ignition config embedded in that secret contains a very large
+#   pull-secret (credentials for dozens of mirror registries).  The copied secret
+#   exceeds the Kubernetes API server's 3 MB request-body limit.
+#
+# WHY --dedicated-gateway=false IS SUFFICIENT:
+#   With --dedicated-gateway=false subctl opens the required IPsec/NAT-T ports
+#   (UDP 500, UDP 4500, UDP 4900, ESP/IP-50) on the EXISTING worker security group
+#   and skips creating a new MachineSet entirely — so no secret copy is made.
+#   An existing worker node is labeled as the gateway by LabelGatewayNode below.
+#   Submariner's NAT-T mode (enabled by default; --natt=false was removed earlier)
+#   discovers the worker's external IP through the AWS NAT Gateway and uses it for
+#   the cross-region IPsec tunnel, so no dedicated public-subnet node is required.
+#
 # See: https://submariner.io/getting-started/quickstart/openshift/globalnet/#prepare-aws-clusters-for-submariner
 PrepareAwsCluster() {
     typeset kubeconfig="$1"
     typeset metadataFile="$2"
     typeset spokeName="$3"
 
-    echo "[INFO] Running subctl cloud prepare aws for spoke '${spokeName}' (metadata=${metadataFile})" >&2
+    echo "[INFO] Opening Submariner firewall ports on spoke '${spokeName}' (metadata=${metadataFile})" >&2
     "${subctlBin}" cloud prepare aws \
         --kubeconfig "${kubeconfig}" \
-        --ocp-metadata "${metadataFile}"
-    echo "[INFO] cloud prepare complete for spoke '${spokeName}'" >&2
+        --ocp-metadata "${metadataFile}" \
+        --dedicated-gateway=false
+    echo "[INFO] Firewall ports opened for spoke '${spokeName}'" >&2
 }
 
 #=====================
-# LabelGatewayNode — label the subctl-deployed gateway node as Submariner gateway
+# LabelGatewayNode — label a worker node as the Submariner gateway
 #=====================
-# 'subctl cloud prepare aws' creates a dedicated MachineSet in the public subnet
-# (name contains 'submariner').  The node created by that MachineSet has the public
-# IP and is in the security group that subctl configured.  Labeling any other worker
-# (e.g. items[0]) puts the gateway pod on a private-subnet node that can never
-# establish cross-region IPsec tunnels.
+# Since PrepareAwsCluster uses --dedicated-gateway=false, no dedicated gateway
+# MachineSet is created.  This function labels the first available worker node.
+# Submariner's NAT-T mode handles cross-region connectivity through the AWS NAT
+# Gateway without requiring the gateway node to be in a public subnet.
+#
+# The submariner MachineSet lookup is retained for forward compatibility in case
+# a future change re-enables --dedicated-gateway=true on clusters where the
+# userData secret is small enough to fit within the 3 MB API limit.
 LabelGatewayNode() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
     echo "[INFO] Finding subctl gateway MachineSet on spoke '${spokeName}'" >&2
-    typeset gwMachineSet
-    gwMachineSet="$(
+    # Avoid grep in a pipefail pipeline — grep exits 1 on no-match, which would
+    # abort the script.  Use a bash loop instead; no || true needed.
+    typeset gwMachineSet=""
+    typeset allMachineSets
+    allMachineSets="$(
         KUBECONFIG="${kubeconfig}" oc get machineset \
             -n openshift-machine-api \
-            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null |
-        tr ' ' '\n' |
-        grep -i 'submariner' |
-        head -1 || true
+            -o jsonpath='{.items[*].metadata.name}'
     )"
+    typeset ms
+    for ms in ${allMachineSets}; do
+        if [[ "${ms,,}" == *submariner* ]]; then
+            gwMachineSet="${ms}"
+            break
+        fi
+    done
 
     typeset gatewayNode=''
 
@@ -231,13 +258,34 @@ LabelGatewayNode() {
         if (( gwWait >= gwMax )); then
             echo "[WARN] MachineSet ${gwMachineSet} did not reach readyReplicas=1 within ${gwMax}s; falling back to first worker" >&2
         else
-            # The node created by the MachineSet carries the label
-            # machine.openshift.io/cluster-api-machineset=<machineset-name>.
-            gatewayNode="$(
-                KUBECONFIG="${kubeconfig}" oc get node \
+            # Follow the Machine -> status.nodeRef.name chain to find the gateway node.
+            #
+            # 'machine.openshift.io/cluster-api-machineset' is reliably set on Machine
+            # objects but is NOT always propagated to Node objects by the Machine API
+            # controller — confirmed by build logs where the node label lookup returned
+            # empty even after readyReplicas=1.  The authoritative node name is in
+            # machine.status.nodeRef.name, which is always set once readyReplicas=1.
+            typeset machineName
+            machineName="$(
+                KUBECONFIG="${kubeconfig}" oc get machine \
+                    -n openshift-machine-api \
                     -l "machine.openshift.io/cluster-api-machineset=${gwMachineSet}" \
-                    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+                    -o jsonpath='{.items[0].metadata.name}'
             )"
+
+            if [[ -n "${machineName}" ]]; then
+                echo "[INFO] Gateway Machine: ${machineName}" >&2
+                gatewayNode="$(
+                    KUBECONFIG="${kubeconfig}" oc get machine "${machineName}" \
+                        -n openshift-machine-api \
+                        -o jsonpath='{.status.nodeRef.name}'
+                )"
+                if [[ -z "${gatewayNode}" ]]; then
+                    echo "[WARN] Machine '${machineName}' has no nodeRef; falling back to first worker" >&2
+                fi
+            else
+                echo "[WARN] No Machine found in MachineSet '${gwMachineSet}'; falling back to first worker" >&2
+            fi
         fi
     else
         echo "[WARN] No submariner MachineSet found on spoke '${spokeName}'; falling back to first worker" >&2
@@ -262,10 +310,17 @@ LabelGatewayNode() {
         submariner.io/gateway=true \
         --overwrite
 
-    # Remove the infra taint if present so that Submariner gateway pods can schedule.
-    # subctl may or may not add this taint depending on version; || true handles absence.
-    KUBECONFIG="${kubeconfig}" oc adm taint node "${gatewayNode}" \
-        node-role.kubernetes.io/infra:NoSchedule- 2>/dev/null || true
+    # Remove the infra taint only if present; 'oc adm taint taintname-' exits non-zero
+    # if the taint is absent, so check first to avoid a spurious failure.
+    typeset infraTaintKey
+    infraTaintKey="$(
+        KUBECONFIG="${kubeconfig}" oc get node "${gatewayNode}" \
+            -o jsonpath='{.spec.taints[?(@.key=="node-role.kubernetes.io/infra")].key}'
+    )"
+    if [[ -n "${infraTaintKey}" ]]; then
+        KUBECONFIG="${kubeconfig}" oc adm taint node "${gatewayNode}" \
+            node-role.kubernetes.io/infra:NoSchedule-
+    fi
 
     echo "[INFO] Gateway node labeled: ${gatewayNode}" >&2
 }

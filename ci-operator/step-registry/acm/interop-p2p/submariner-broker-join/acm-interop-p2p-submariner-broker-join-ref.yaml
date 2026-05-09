@@ -15,12 +15,16 @@ ref:
     Step 2 of 3 in the Submariner installation chain.
 
     Deploys the Submariner broker on the hub cluster, then joins each spoke
-    to the broker using 'subctl join'. After all spokes have joined, waits for:
-      - submariner-gateway DaemonSet to be fully available on each spoke
-      - submariner-globalnet DaemonSet on each spoke
-      - submariner-lighthouse-agent Deployment on each spoke
-      - submariner-lighthouse-coredns Deployment on each spoke
-      - OpenShift cluster CoreDNS (dns-default) to include Lighthouse forwarding
+    to the broker using 'subctl join'. After all spokes have joined, waits in
+    three ordered phases on each spoke:
+      Phase 1 - submariner-operator Deployment Available
+      Phase 2 - submariner-gateway DaemonSet exists (--for=create) and rolls out
+      Phase 3 - submariner-routeagent DaemonSet (all-nodes routing, critical for
+                 cross-cluster pod traffic), submariner-globalnet DaemonSet,
+                 submariner-lighthouse-agent Deployment,
+                 submariner-lighthouse-coredns Deployment
+    Finally waits for OpenShift CoreDNS (dns-default) to include the
+    Lighthouse clusterset.local stub zone on each spoke.
 
     Inputs from SHARED_DIR (written by submariner-cloud-prepare):
       subctl  - subctl binary

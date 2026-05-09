@@ -131,7 +131,7 @@ EOF
             echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s" >&2
             break
         fi
-        echo "[INFO]   ServiceImport not yet available (${siWait}/${siMax}s elapsed)" >&2
+        : "ServiceImport not yet available (${siWait}/${siMax}s elapsed)"
         sleep 10
         (( siWait += 10 ))
     done
@@ -139,9 +139,9 @@ EOF
     if (( siWait >= siMax )); then
         echo "[ERROR] ServiceImport 'nginx' not found on '${targetCluster}' after ${siMax}s" >&2
         echo "[DEBUG] ServiceImports in default namespace on '${targetCluster}':" >&2
-        KUBECONFIG="${kcTarget}" oc get serviceimports -n default -o wide 2>&1 || true
+        KUBECONFIG="${kcTarget}" oc get serviceimports -n default -o wide 2>&1 || echo "[DEBUG] oc get serviceimports failed" >&2
         echo "[DEBUG] GlobalIngressIPs on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || true
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || echo "[DEBUG] oc get globalingressips failed" >&2
         exit 1
     fi
 
@@ -156,14 +156,13 @@ EOF
         giIP="$(
             KUBECONFIG="${kcSource}" oc get globalingressips \
                 -n default \
-                -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' \
-                || true
+                -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}'
         )"
         if [[ -n "${giIP}" ]]; then
             echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)" >&2
             break
         fi
-        echo "[INFO]   No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)" >&2
+        : "No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)"
         sleep 10
         (( giWait += 10 ))
     done
@@ -171,15 +170,16 @@ EOF
     if [[ -z "${giIP}" ]]; then
         echo "[ERROR] GlobalIngressIP not allocated for nginx on '${sourceCluster}' after ${giMax}s" >&2
         echo "[DEBUG] All GlobalIngressIPs on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || true
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || echo "[DEBUG] oc get globalingressips failed" >&2
         echo "[DEBUG] ServiceExports on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get serviceexports -n default -o wide 2>&1 || true
+        KUBECONFIG="${kcSource}" oc get serviceexports -n default -o wide 2>&1 || echo "[DEBUG] oc get serviceexports failed" >&2
         exit 1
     fi
 
-    # Clean up any previous nettest pod before running the curl
+    # Clean up any previous nettest pod before running the curl.
+    # --ignore-not-found makes this a no-op if the pod doesn't exist yet.
     KUBECONFIG="${kcTarget}" oc -n default delete pod submariner-nettest \
-        --ignore-not-found --grace-period=0 || true
+        --ignore-not-found --grace-period=0
 
     echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local" >&2
     KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
@@ -189,12 +189,28 @@ EOF
         curl -v --retry 5 --retry-delay 10 --retry-connrefused \
             "http://nginx.default.svc.clusterset.local:80/"
 
-    echo "[INFO] Waiting for nettest pod to complete on '${targetCluster}'" >&2
-    KUBECONFIG="${kcTarget}" oc -n default wait pod/submariner-nettest \
-        --for condition=Ready \
-        --timeout=2m || true
+    # Wait for the nettest pod to reach a terminal state.  A --restart=Never pod
+    # transitions directly to Succeeded or Failed — never to Ready — so
+    # 'oc wait --for condition=Ready' would always time out.  Poll the phase instead.
+    echo "[INFO] Waiting for nettest pod to reach terminal state on '${targetCluster}'" >&2
+    typeset -i nettestWait=0
+    typeset nettestPhase=""
+    while (( nettestWait < 120 )); do
+        nettestPhase="$(
+            KUBECONFIG="${kcTarget}" oc -n default get pod submariner-nettest \
+                -o jsonpath='{.status.phase}'
+        )"
+        [[ "${nettestPhase}" == "Succeeded" || "${nettestPhase}" == "Failed" ]] && break
+        sleep 5
+        (( nettestWait += 5 ))
+    done
+    if [[ "${nettestPhase}" != "Succeeded" && "${nettestPhase}" != "Failed" ]]; then
+        echo "[ERROR] nettest pod did not reach terminal state within 120s (phase: ${nettestPhase})" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest >&2 || echo "[DEBUG] describe failed" >&2
+        exit 1
+    fi
 
-    KUBECONFIG="${kcTarget}" oc -n default logs submariner-nettest --tail=50 2>&1 || true
+    KUBECONFIG="${kcTarget}" oc -n default logs submariner-nettest --tail=50 2>&1 || echo "[DEBUG] Could not retrieve nettest logs" >&2
 
     typeset exitCode
     exitCode="$(
@@ -203,7 +219,7 @@ EOF
     )"
     if [[ "${exitCode}" != "0" ]]; then
         echo "[ERROR] nettest curl failed (exitCode=${exitCode}) on '${targetCluster}'" >&2
-        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest 2>&1 || true
+        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest 2>&1 || echo "[DEBUG] oc describe nettest pod failed" >&2
         exit 1
     fi
 
@@ -234,10 +250,10 @@ WaitGlobalnetHeadlessServiceReady() {
         )"
         if (( count > 0 )); then
             echo "[INFO] ${count} GlobalIngressIP(s) found on '${clusterName}' after ${wait}s" >&2
-            KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide || true
+            KUBECONFIG="${kubeconfig}" oc get globalingressips -n default -o wide || echo "[DEBUG] oc get globalingressips failed" >&2
             break
         fi
-        echo "[INFO]   No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)" >&2
+        : "No GlobalIngressIPs yet on '${clusterName}' (${wait}/${maxWait}s)"
         sleep 10
         (( wait += 10 ))
     done
@@ -245,9 +261,9 @@ WaitGlobalnetHeadlessServiceReady() {
     if (( wait >= maxWait )); then
         echo "[ERROR] No GlobalIngressIPs found on '${clusterName}' after ${maxWait}s" >&2
         echo "[DEBUG] ServiceExports on '${clusterName}':" >&2
-        KUBECONFIG="${kubeconfig}" oc get serviceexports -n default -o wide 2>&1 || true
+        KUBECONFIG="${kubeconfig}" oc get serviceexports -n default -o wide 2>&1 || echo "[DEBUG] oc get serviceexports failed" >&2
         echo "[DEBUG] Submariner GlobalEgressIPs on '${clusterName}':" >&2
-        KUBECONFIG="${kubeconfig}" oc get globalegressips -n default -o wide 2>&1 || true
+        KUBECONFIG="${kubeconfig}" oc get globalegressips -n default -o wide 2>&1 || echo "[DEBUG] oc get globalegressips failed" >&2
         exit 1
     fi
 }
@@ -290,10 +306,9 @@ if [[ ! -x "${subctlBin}" ]]; then
     exit 1
 fi
 
-if [[ ! -x "${yqBin}" ]]; then
-    echo "[FATAL] yq not found in SHARED_DIR (${yqBin}). Was acm-interop-p2p-submariner-cloud-prepare run?" >&2
-    exit 1
-fi
+# Note: yq is not used in this step.  The docs rename kubeconfig contexts with yq
+# before running 'subctl verify --context/--tocontext', but we use --kubeconfigs
+# with separate files, making context renaming unnecessary.
 
 LoadSpokeConfig
 
