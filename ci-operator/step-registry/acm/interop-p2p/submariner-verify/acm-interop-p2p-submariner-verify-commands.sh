@@ -3,6 +3,7 @@
 # Step 3 of 3: Submariner Connectivity Verification
 #
 # Responsibilities:
+#   - Download subctl to /tmp/bin/ (step-local; NOT in SHARED_DIR)
 #   - Deploy nginx pod + ClusterIP service on spoke 1, export it via ServiceExport
 #   - Wait for ServiceImport to appear on spoke 2
 #   - Wait for GlobalIngressIP to be allocated on spoke 1 (fixes curl NXDOMAIN)
@@ -10,7 +11,10 @@
 #   - Validate headless globalnet service discovery
 #   - Run 'subctl verify' for comprehensive tunnel + service-discovery tests
 #
-# Requires: subctl and yq binaries in SHARED_DIR (written by submariner-cloud-prepare)
+# WHY subctl is downloaded here (not read from SHARED_DIR):
+#   Storing large binaries in SHARED_DIR causes CI operator to fail with
+#   "Request entity too large" when serialising SHARED_DIR into a Kubernetes
+#   Secret between steps (3 MB limit).  Each step installs its own copy.
 #
 
 set -euxo pipefail; shopt -s inherit_errexit
@@ -18,7 +22,8 @@ set -euxo pipefail; shopt -s inherit_errexit
 #=====================
 # Constants
 #=====================
-typeset -r subctlBin="${SHARED_DIR}/subctl"
+# subctlBin is step-local (/tmp/bin); installed by InstallSubctl below.
+typeset -r subctlBin="/tmp/bin/subctl"
 typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 
 #=====================
@@ -29,6 +34,22 @@ Need() {
         echo "[FATAL] '$1' not found in PATH" >&2
         exit 1
     }
+}
+
+#=====================
+# InstallSubctl — install subctl via the official installer into /tmp/bin/
+#=====================
+InstallSubctl() {
+    mkdir -p /tmp/bin
+    if [[ -x "${subctlBin}" ]]; then
+        echo "[INFO] subctl already present at ${subctlBin}, skipping download" >&2
+        return
+    fi
+    echo "[INFO] Installing subctl via https://get.submariner.io" >&2
+    curl -Ls https://get.submariner.io | bash
+    cp "${HOME}/.local/bin/subctl" "${subctlBin}"
+    chmod +x "${subctlBin}"
+    echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)" >&2
 }
 
 #=====================
@@ -299,17 +320,14 @@ VerifyConnectivity() {
 #=====================
 Need oc
 Need jq
+Need curl
 
-if [[ ! -x "${subctlBin}" ]]; then
-    echo "[FATAL] subctl not found in SHARED_DIR (${subctlBin}). Was acm-interop-p2p-submariner-cloud-prepare run?" >&2
-    exit 1
-fi
+LoadSpokeConfig
+InstallSubctl
 
 # Note: yq is not used in this step.  The docs rename kubeconfig contexts with yq
 # before running 'subctl verify --context/--tocontext', but we use --kubeconfigs
 # with separate files, making context renaming unnecessary.
-
-LoadSpokeConfig
 
 # Verify connectivity for each pair of spokes
 # With 2 spokes: spoke[0] (source) -> spoke[1] (target)

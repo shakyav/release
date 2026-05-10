@@ -3,10 +3,17 @@
 # Step 1 of 3: Submariner Cloud Prepare
 #
 # Responsibilities:
-#   - Download subctl to SHARED_DIR (reused by broker-join and verify steps)
-#   - Download yq to SHARED_DIR (reused by verify step)
+#   - Download subctl to /tmp/bin/ (step-local; NOT in SHARED_DIR)
 #   - Run 'subctl cloud prepare aws' on each spoke to open firewall ports
 #   - Label one worker node per spoke as the Submariner gateway
+#
+# WHY binaries are NOT stored in SHARED_DIR:
+#   After each step the CI operator serialises SHARED_DIR into a Kubernetes
+#   Secret so the next step can access its files.  Kubernetes Secrets have a
+#   hard 3 MB request-body limit.  subctl (~50 MB) and yq (~10 MB) far exceed
+#   that limit, causing "Request entity too large: limit is 3145728" even when
+#   the step script itself succeeds.  Each step therefore installs its own
+#   copy of any required binary from the internet at step start.
 #
 # AWS credentials are loaded into ~/.aws/ and removed on EXIT via trap.
 # They are never written to SHARED_DIR.
@@ -17,8 +24,8 @@ set -euxo pipefail; shopt -s inherit_errexit
 #=====================
 # Constants
 #=====================
-typeset -r subctlBin="${SHARED_DIR}/subctl"
-typeset -r yqBin="${SHARED_DIR}/yq"
+# subctlBin is step-local (/tmp/bin); broker-join and verify install their own.
+typeset -r subctlBin="/tmp/bin/subctl"
 typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 
 # Temporary file path for AWS credentials (populated by SetAwsCredentials)
@@ -46,15 +53,16 @@ Need() {
 }
 
 #=====================
-# InstallSubctl — install subctl via the official installer, copy binary to SHARED_DIR
+# InstallSubctl — install subctl via the official installer into /tmp/bin/
 #=====================
 # Uses the official https://get.submariner.io installer so no manual version
-# management or URL format changes are needed.  The binary is copied into
-# SHARED_DIR so that the broker-join and verify steps (running in separate
-# containers) can reuse it without downloading again.
+# management or URL format changes are needed.  The binary is placed in
+# /tmp/bin/ (step-local) and is NOT written to SHARED_DIR.
+# broker-join and verify install their own copies.
 InstallSubctl() {
+    mkdir -p /tmp/bin
     if [[ -x "${subctlBin}" ]]; then
-        echo "[INFO] subctl already present in SHARED_DIR, skipping download" >&2
+        echo "[INFO] subctl already present at ${subctlBin}, skipping download" >&2
         return
     fi
     echo "[INFO] Installing subctl via https://get.submariner.io" >&2
@@ -62,28 +70,6 @@ InstallSubctl() {
     cp "${HOME}/.local/bin/subctl" "${subctlBin}"
     chmod +x "${subctlBin}"
     echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)" >&2
-}
-
-#=====================
-# InstallYq — download yq to SHARED_DIR
-#=====================
-# yq is used by the verify step; a pinned release keeps the binary small and
-# avoids the version-drift risk that subctl's rolling tag already accepts.
-# SHARED_DIR is used so the verify step can reuse the binary without a second download.
-InstallYq() {
-    typeset -r yqVersion="v4.44.2"
-    if [[ -x "${yqBin}" ]]; then
-        echo "[INFO] yq already present in SHARED_DIR, skipping download" >&2
-        return
-    fi
-    typeset yqArch
-    yqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-    echo "[INFO] Downloading yq ${yqVersion} (${yqArch}) to SHARED_DIR" >&2
-    curl -fsSL \
-        "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_${yqArch}" \
-        -o "${yqBin}"
-    chmod +x "${yqBin}"
-    echo "[INFO] yq installed: $(${yqBin} --version)" >&2
 }
 
 #=====================
@@ -338,7 +324,6 @@ Need curl
 
 LoadSpokeConfig
 InstallSubctl
-InstallYq
 SetAwsCredentials
 
 typeset -i i
