@@ -154,23 +154,51 @@ WaitSubmarinerOperatorReady() {
 }
 
 #=====================
+# WaitForObjectToExist — portable poll until a Kubernetes resource exists
+#=====================
+# oc wait --for=create is NOT supported by all oc binary versions present in CI
+# containers (it returns "unrecognized condition: create" on some builds even
+# though the resource already exists).  This helper replaces every --for=create
+# usage with a simple oc get poll that works on any oc version.
+#
+# Arguments:
+#   $1 kubeconfig  - path to KUBECONFIG
+#   $2 resource    - resource type/name (e.g. daemonset/submariner-gateway)
+#   $3 namespace   - Kubernetes namespace
+#   $4 timeoutSecs - how long to wait before giving up (default: 300)
+#   $5 spokeName   - human-readable label for error messages
+WaitForObjectToExist() {
+    typeset kubeconfig="$1"
+    typeset resource="$2"
+    typeset namespace="$3"
+    typeset -i timeoutSecs="${4:-300}"
+    typeset spokeName="${5:-unknown}"
+
+    typeset -i waited=0
+    typeset -i interval=10
+    until KUBECONFIG="${kubeconfig}" oc get "${resource}" -n "${namespace}" 2>/dev/null; do
+        if (( waited >= timeoutSecs )); then
+            echo "[ERROR] ${resource} not found in namespace '${namespace}' after ${timeoutSecs}s on spoke '${spokeName}'" >&2
+            KUBECONFIG="${kubeconfig}" oc get all -n "${namespace}" >&2
+            exit 1
+        fi
+        : "Waiting for ${resource} to exist on spoke '${spokeName}' (${waited}/${timeoutSecs}s)"
+        sleep "${interval}"
+        (( waited += interval ))
+    done
+}
+
+#=====================
 # WaitSubmarinerReady — wait for submariner-gateway DaemonSet on one spoke
 #=====================
-# Two-phase: --for=create waits for the operator to deploy the DaemonSet object,
-# then oc rollout status waits for all pods to be scheduled and Running.
+# Two-phase: poll until the operator creates the DaemonSet object, then
+# oc rollout status waits for all pods to be scheduled and Running.
 WaitSubmarinerReady() {
     typeset kubeconfig="$1"
     typeset spokeName="$2"
 
     echo "[INFO] Waiting for submariner-gateway DaemonSet to appear on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
-            daemonset/submariner-gateway \
-            -n submariner-operator \
-            --timeout=5m; then
-        echo "[ERROR] submariner-gateway DaemonSet not created within 5m on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
+    WaitForObjectToExist "${kubeconfig}" daemonset/submariner-gateway submariner-operator 300 "${spokeName}"
 
     echo "[INFO] Waiting for submariner-gateway DaemonSet rollout on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-gateway \
@@ -191,53 +219,25 @@ WaitAllSubmarinerComponentsReady() {
     typeset spokeName="$2"
 
     echo "[INFO] Waiting for submariner-routeagent on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
-            daemonset/submariner-routeagent \
-            -n submariner-operator \
-            --timeout=5m; then
-        echo "[ERROR] submariner-routeagent DaemonSet not created within 5m on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
+    WaitForObjectToExist "${kubeconfig}" daemonset/submariner-routeagent submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-routeagent \
         -n submariner-operator \
         --timeout=10m
 
     echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
-            daemonset/submariner-globalnet \
-            -n submariner-operator \
-            --timeout=5m; then
-        echo "[ERROR] submariner-globalnet DaemonSet not created within 5m on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
+    WaitForObjectToExist "${kubeconfig}" daemonset/submariner-globalnet submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-globalnet \
         -n submariner-operator \
         --timeout=10m
 
     echo "[INFO] Waiting for submariner-lighthouse-agent on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
-            deployment/submariner-lighthouse-agent \
-            -n submariner-operator \
-            --timeout=5m; then
-        echo "[ERROR] submariner-lighthouse-agent Deployment not created within 5m on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
+    WaitForObjectToExist "${kubeconfig}" deployment/submariner-lighthouse-agent submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-agent \
         -n submariner-operator \
         --timeout=10m
 
     echo "[INFO] Waiting for submariner-lighthouse-coredns on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait --for=create \
-            deployment/submariner-lighthouse-coredns \
-            -n submariner-operator \
-            --timeout=5m; then
-        echo "[ERROR] submariner-lighthouse-coredns Deployment not created within 5m on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
+    WaitForObjectToExist "${kubeconfig}" deployment/submariner-lighthouse-coredns submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-coredns \
         -n submariner-operator \
         --timeout=10m
