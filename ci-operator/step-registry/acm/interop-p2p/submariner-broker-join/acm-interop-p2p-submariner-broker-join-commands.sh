@@ -93,10 +93,18 @@ LoadSpokeConfig() {
 #=====================
 DeployBroker() {
     echo "[INFO] Deploying Submariner broker on hub cluster" >&2
-    "${subctlBin}" deploy-broker \
-        --kubeconfig "${KUBECONFIG}" \
-        --globalnet \
-        --broker-info-file "${brokerInfoFile}"
+    # subctl deploy-broker writes broker-info.subm to the CURRENT WORKING DIRECTORY.
+    # There is no --broker-info-file flag in subctl v0.23.1 (the flag was removed;
+    # using it causes "unknown flag: --broker-info-file" and immediate exit 1).
+    # Run inside a subshell that changes to /tmp so the output file lands at
+    # /tmp/broker-info.subm, which is where brokerInfoFile points.
+    (
+        cd /tmp
+        "${subctlBin}" deploy-broker \
+            --kubeconfig "${KUBECONFIG}" \
+            --globalnet
+    )
+    [[ -f "${brokerInfoFile}" ]]
     echo "[INFO] Broker deployed, broker-info written to ${brokerInfoFile}" >&2
 }
 
