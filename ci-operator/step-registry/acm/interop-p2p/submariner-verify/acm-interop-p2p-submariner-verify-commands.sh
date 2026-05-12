@@ -173,129 +173,129 @@ VerifyNginxConnectivity() {
 
     echo "[INFO] === Nginx connectivity: ${sourceCluster} -> ${targetCluster} ===" >&2
 
-    # Deploy nginx on source cluster
-    echo "[INFO] Deploying nginx on '${sourceCluster}'" >&2
-    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nginx
-  namespace: default
-  labels:
-    app: nginx
-spec:
-  containers:
-  - name: nginx
-    image: nginxinc/nginx-unprivileged:stable-alpine
-    ports:
-    - containerPort: 8080
-EOF
+    # ---- Deploy ClusterIP nginx Service on source cluster ----
+    # Follows exactly: https://submariner.io/getting-started/quickstart/openshift/globalnet/#verify-deployment
+    #
+    #   kubectl -n default create deployment nginx --image=nginxinc/nginx-unprivileged:stable-alpine
+    #   kubectl -n default expose deployment nginx --port=8080
+    #   subctl export service --namespace default nginx
+    #
+    # Existence checks are the only CI addition — the original commands are not
+    # idempotent and would fail on a Prow step retry.
 
-    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx
-  namespace: default
-spec:
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-    targetPort: 8080
-EOF
+    echo "[INFO] Creating nginx Deployment on '${sourceCluster}'" >&2
+    if KUBECONFIG="${kcSource}" oc get deployment nginx -n default 1>/dev/null 2>&1; then
+        echo "[INFO] Deployment 'nginx' already exists on '${sourceCluster}', skipping create" >&2
+    else
+        KUBECONFIG="${kcSource}" oc -n default create deployment nginx \
+            --image=nginxinc/nginx-unprivileged:stable-alpine
+    fi
 
-    echo "[INFO] Waiting for nginx Pod to be Running on '${sourceCluster}'" >&2
-    KUBECONFIG="${kcSource}" oc -n default wait pod/nginx \
-        --for condition=Ready \
+    echo "[INFO] Exposing nginx on port 8080 on '${sourceCluster}'" >&2
+    if KUBECONFIG="${kcSource}" oc get service nginx -n default 1>/dev/null 2>&1; then
+        echo "[INFO] Service 'nginx' already exists on '${sourceCluster}', skipping expose" >&2
+    else
+        KUBECONFIG="${kcSource}" oc -n default expose deployment nginx --port=8080
+    fi
+
+    # Wait for the Deployment to be Available before exporting.
+    # Not in the quickstart docs (manual flow can afford to wait implicitly)
+    # but required in CI so Lighthouse doesn't see a Service with zero endpoints.
+    echo "[INFO] Waiting for nginx Deployment to be Available on '${sourceCluster}'" >&2
+    KUBECONFIG="${kcSource}" oc -n default wait deployment/nginx \
+        --for condition=Available \
         --timeout=3m
 
-    # Export the service for cross-cluster discovery
-    echo "[INFO] Creating ServiceExport for nginx on '${sourceCluster}'" >&2
-    KUBECONFIG="${kcSource}" oc -n default apply -f - <<'EOF'
-apiVersion: multicluster.x-k8s.io/v1alpha1
-kind: ServiceExport
-metadata:
-  name: nginx
-  namespace: default
-EOF
+    echo "[INFO] Exporting nginx service on '${sourceCluster}'" >&2
+    if KUBECONFIG="${kcSource}" oc get serviceexport nginx -n default 1>/dev/null 2>&1; then
+        echo "[INFO] ServiceExport 'nginx' already exists on '${sourceCluster}', skipping" >&2
+    else
+        KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
+    fi
 
-    # Wait for ServiceImport to propagate to target cluster
+    # Wait for ServiceImport to propagate to target cluster WITH status.ips populated.
+    #
+    # WHY checking existence is insufficient:
+    #   oc get serviceimport returns exit 0 as soon as the object exists, but
+    #   Lighthouse CoreDNS answers DNS queries from status.ips — NOT from the object
+    #   itself.  status.ips is populated asynchronously by the globalnet-controller
+    #   on the source cluster and then synced through the broker to the target.
+    #   If we curl before status.ips is present, lighthouse-coredns returns NXDOMAIN
+    #   (exit code 6) even though the ServiceImport object already exists.
+    #
+    # Root cause of job #2054144417261948928 failure: ServiceImport existed on spoke 2
+    # (checked with oc get, exit 0) but status.ips was still empty — the
+    # globalnet-controller → broker → lighthouse-agent sync hadn't completed yet.
     typeset -i siWait=0
-    typeset -i siMax=180
-    echo "[INFO] Waiting for ServiceImport 'nginx' on '${targetCluster}' (timeout=${siMax}s)" >&2
+    typeset -i siMax=300    # 5 minutes — full sync pipeline can take >3 minutes
+    typeset siIPs=""
+    echo "[INFO] Waiting for ServiceImport 'nginx' with populated status.ips on '${targetCluster}' (timeout=${siMax}s)" >&2
     while (( siWait < siMax )); do
-        if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null; then
-            echo "[INFO] ServiceImport 'nginx' found on '${targetCluster}' after ${siWait}s" >&2
+        siIPs="$(
+            KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default \
+                -o jsonpath='{.status.ips[*]}' 2>/dev/null || true
+        )"
+        if [[ -n "${siIPs}" ]]; then
+            echo "[INFO] ServiceImport 'nginx' on '${targetCluster}' has IPs: ${siIPs} (after ${siWait}s)" >&2
             break
         fi
-        : "ServiceImport not yet available (${siWait}/${siMax}s elapsed)"
+        : "ServiceImport 'nginx' status.ips not yet populated on '${targetCluster}' (${siWait}/${siMax}s)"
         sleep 10
         (( siWait += 10 ))
     done
 
-    if (( siWait >= siMax )); then
-        echo "[ERROR] ServiceImport 'nginx' not found on '${targetCluster}' after ${siMax}s" >&2
-        echo "[DEBUG] ServiceImports in default namespace on '${targetCluster}':" >&2
-        KUBECONFIG="${kcTarget}" oc get serviceimports -n default -o wide 2>&1 || echo "[DEBUG] oc get serviceimports failed" >&2
+    if [[ -z "${siIPs}" ]]; then
+        echo "[ERROR] ServiceImport 'nginx' status.ips not populated on '${targetCluster}' after ${siMax}s" >&2
+        echo "[DEBUG] ServiceImport yaml on '${targetCluster}':" >&2
+        KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default -o yaml 2>&1 || true
         echo "[DEBUG] GlobalIngressIPs on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || echo "[DEBUG] oc get globalingressips failed" >&2
-        exit 1
-    fi
-
-    # Wait for GlobalIngressIP to be allocated on source cluster.
-    # Without this, Lighthouse CoreDNS has no IP to return for the
-    # clusterset.local DNS query and curl fails with NXDOMAIN / exit 6.
-    typeset -i giWait=0
-    typeset -i giMax=180
-    typeset giIP=""
-    echo "[INFO] Waiting for GlobalIngressIP for nginx service on '${sourceCluster}' (timeout=${giMax}s)" >&2
-    while (( giWait < giMax )); do
-        giIP="$(
-            KUBECONFIG="${kcSource}" oc get globalingressips \
-                -n default \
-                -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}'
-        )"
-        if [[ -n "${giIP}" ]]; then
-            echo "[INFO] GlobalIngressIP allocated for nginx on '${sourceCluster}': ${giIP} (after ${giWait}s)" >&2
-            break
-        fi
-        : "No GlobalIngressIP yet for nginx on '${sourceCluster}' (${giWait}/${giMax}s)"
-        sleep 10
-        (( giWait += 10 ))
-    done
-
-    if [[ -z "${giIP}" ]]; then
-        echo "[ERROR] GlobalIngressIP not allocated for nginx on '${sourceCluster}' after ${giMax}s" >&2
-        echo "[DEBUG] All GlobalIngressIPs on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || echo "[DEBUG] oc get globalingressips failed" >&2
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide 2>&1 || true
         echo "[DEBUG] ServiceExports on '${sourceCluster}':" >&2
-        KUBECONFIG="${kcSource}" oc get serviceexports -n default -o wide 2>&1 || echo "[DEBUG] oc get serviceexports failed" >&2
+        KUBECONFIG="${kcSource}" oc get serviceexports -n default -o wide 2>&1 || true
         exit 1
     fi
 
-    # Clean up any previous nettest pod before running the curl.
-    # --ignore-not-found makes this a no-op if the pod doesn't exist yet.
-    KUBECONFIG="${kcTarget}" oc -n default delete pod submariner-nettest \
+    # Also confirm the GlobalIngressIP is allocated on the source cluster for
+    # debug purposes — the IPs in status.ips should match it.
+    typeset giIP=""
+    giIP="$(
+        KUBECONFIG="${kcSource}" oc get globalingressips \
+            -n default \
+            -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' 2>/dev/null || true
+    )"
+    if [[ -n "${giIP}" ]]; then
+        echo "[INFO] GlobalIngressIP on '${sourceCluster}': ${giIP} (ServiceImport IPs: ${siIPs})" >&2
+    else
+        echo "[WARN] GlobalIngressIP for nginx not found on '${sourceCluster}' (ServiceImport IPs: ${siIPs})" >&2
+    fi
+
+    # ---- Run nettest from target cluster ----
+    # Official docs:
+    #   kubectl -n default run tmp-shell --rm -i --tty --image quay.io/submariner/nettest -- /bin/bash
+    #   curl nginx.default.svc.clusterset.local:8080
+    #
+    # CI adaptation: --restart=Never with curl as the pod command (non-interactive).
+    # --rm is implicit because the pod terminates on its own; we poll the phase
+    # instead of waiting for condition=Ready (--restart=Never pods never reach Ready).
+
+    KUBECONFIG="${kcTarget}" oc -n default delete pod tmp-shell \
         --ignore-not-found --grace-period=0
 
-    echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local" >&2
-    KUBECONFIG="${kcTarget}" oc -n default run submariner-nettest \
-        --image=quay.io/submariner/nettest:latest \
+    echo "[INFO] Running curl from '${targetCluster}' to nginx.default.svc.clusterset.local:8080" >&2
+    KUBECONFIG="${kcTarget}" oc -n default run tmp-shell \
+        --image=quay.io/submariner/nettest \
         --restart=Never \
         --command -- \
-        curl -v --retry 5 --retry-delay 10 --retry-connrefused \
-            "http://nginx.default.svc.clusterset.local:80/"
+        curl nginx.default.svc.clusterset.local:8080
 
-    # Wait for the nettest pod to reach a terminal state.  A --restart=Never pod
-    # transitions directly to Succeeded or Failed — never to Ready — so
-    # 'oc wait --for condition=Ready' would always time out.  Poll the phase instead.
-    echo "[INFO] Waiting for nettest pod to reach terminal state on '${targetCluster}'" >&2
+    # Poll until the pod reaches Succeeded or Failed.
+    # --restart=Never pods transition directly to a terminal phase, never to Ready.
+    echo "[INFO] Waiting for tmp-shell pod to reach terminal state on '${targetCluster}'" >&2
     typeset -i nettestWait=0
     typeset nettestPhase=""
     while (( nettestWait < 120 )); do
         nettestPhase="$(
-            KUBECONFIG="${kcTarget}" oc -n default get pod submariner-nettest \
+            KUBECONFIG="${kcTarget}" oc -n default get pod tmp-shell \
                 -o jsonpath='{.status.phase}'
         )"
         [[ "${nettestPhase}" == "Succeeded" || "${nettestPhase}" == "Failed" ]] && break
@@ -303,21 +303,21 @@ EOF
         (( nettestWait += 5 ))
     done
     if [[ "${nettestPhase}" != "Succeeded" && "${nettestPhase}" != "Failed" ]]; then
-        echo "[ERROR] nettest pod did not reach terminal state within 120s (phase: ${nettestPhase})" >&2
-        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest >&2 || echo "[DEBUG] describe failed" >&2
+        echo "[ERROR] tmp-shell pod did not reach terminal state within 120s (phase: ${nettestPhase})" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod tmp-shell >&2 || echo "[DEBUG] describe failed" >&2
         exit 1
     fi
 
-    KUBECONFIG="${kcTarget}" oc -n default logs submariner-nettest --tail=50 2>&1 || echo "[DEBUG] Could not retrieve nettest logs" >&2
+    KUBECONFIG="${kcTarget}" oc -n default logs tmp-shell --tail=50 2>&1 || echo "[DEBUG] Could not retrieve tmp-shell logs" >&2
 
     typeset exitCode
     exitCode="$(
-        KUBECONFIG="${kcTarget}" oc -n default get pod submariner-nettest \
+        KUBECONFIG="${kcTarget}" oc -n default get pod tmp-shell \
             -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' || echo ""
     )"
     if [[ "${exitCode}" != "0" ]]; then
-        echo "[ERROR] nettest curl failed (exitCode=${exitCode}) on '${targetCluster}'" >&2
-        KUBECONFIG="${kcTarget}" oc -n default describe pod submariner-nettest 2>&1 || echo "[DEBUG] oc describe nettest pod failed" >&2
+        echo "[ERROR] curl failed (exitCode=${exitCode}) on '${targetCluster}'" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod tmp-shell 2>&1 || echo "[DEBUG] oc describe tmp-shell pod failed" >&2
         exit 1
     fi
 
