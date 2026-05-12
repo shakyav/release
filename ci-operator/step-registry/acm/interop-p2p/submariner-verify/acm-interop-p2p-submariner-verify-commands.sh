@@ -80,6 +80,94 @@ LoadSpokeConfig() {
 }
 
 #=====================
+# WaitForClusterSetDNS — wait until .clusterset.local is resolvable on a spoke
+#
+# subctl join patches the CoreDNS ConfigMap (openshift-dns/dns-default in OCP) to
+# add a .clusterset.local stub zone that forwards to Lighthouse CoreDNS.  CoreDNS
+# reloads that ConfigMap on a ~30-second poll cycle.  The verify step starts
+# immediately after broker-join completes, so the DNS change is often not yet live
+# when the first curl runs.  This function waits for:
+#   Phase 1 — ConfigMap patched:  grep clusterset.local in the CoreDNS Corefile
+#   Phase 2 — reload propagated:  nslookup from an existing routeagent pod succeeds
+#
+# $1 = kubeconfig of the spoke to check
+# $2 = spoke name (for logging)
+# $3 = test hostname (defaults to submariner-operator.svc.clusterset.local as a
+#      self-contained check that doesn't require a cross-cluster service)
+#=====================
+WaitForClusterSetDNS() {
+    typeset kubeconfig="$1"
+    typeset spokeName="$2"
+    typeset -i waited=0
+    typeset -i timeout=300
+    typeset -i interval=15
+
+    # Detect the CoreDNS ConfigMap name (OpenShift uses dns-default in openshift-dns;
+    # upstream Kubernetes uses coredns in kube-system).
+    typeset cmName cmNamespace
+    if KUBECONFIG="${kubeconfig}" oc get configmap dns-default -n openshift-dns \
+            1>/dev/null 2>&1; then
+        cmName="dns-default"
+        cmNamespace="openshift-dns"
+    else
+        cmName="coredns"
+        cmNamespace="kube-system"
+    fi
+
+    # Phase 1 — wait for subctl join to patch the Corefile.
+    echo "[INFO] Waiting for CoreDNS ConfigMap '${cmName}' on '${spokeName}' to include clusterset.local" >&2
+    until KUBECONFIG="${kubeconfig}" oc get configmap "${cmName}" -n "${cmNamespace}" \
+            -o jsonpath='{.data.Corefile}' 2>/dev/null | grep -q 'clusterset.local'; do
+        if (( waited >= timeout )); then
+            echo "[ERROR] CoreDNS '${cmName}' on '${spokeName}' was never patched with clusterset.local after ${timeout}s" >&2
+            KUBECONFIG="${kubeconfig}" oc get configmap "${cmName}" -n "${cmNamespace}" -o yaml >&2 || true
+            KUBECONFIG="${kubeconfig}" oc get pods -n submariner-operator -o wide >&2 || true
+            exit 1
+        fi
+        : "clusterset.local not yet in CoreDNS ConfigMap (${waited}/${timeout}s)"
+        sleep "${interval}"
+        (( waited += interval ))
+    done
+    : "CoreDNS ConfigMap on '${spokeName}' patched with clusterset.local after ${waited}s"
+
+    # Phase 2 — wait for CoreDNS to reload the updated Corefile.
+    # CoreDNS default reload interval is 30s. Rather than sleeping a fixed amount,
+    # run nslookup from inside an existing submariner-routeagent pod (which is
+    # guaranteed to be Running) until it can resolve any .clusterset.local name.
+    # Probing the lighthouse-coredns service itself (lighthousecoredns.submariner-operator.svc.cluster.local)
+    # is the cheapest self-contained check — it avoids depending on a cross-cluster ServiceImport.
+    echo "[INFO] Waiting for CoreDNS to start forwarding .clusterset.local queries on '${spokeName}'" >&2
+    typeset routeagentPod
+    routeagentPod="$(
+        KUBECONFIG="${kubeconfig}" oc get pod \
+            -n submariner-operator \
+            -l app=submariner-routeagent \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+    )"
+
+    if [[ -z "${routeagentPod}" ]]; then
+        # No routeagent pod yet — fall back to a fixed 40s sleep covering one reload cycle.
+        : "No routeagent pod found on '${spokeName}'; sleeping 40s for CoreDNS reload"
+        sleep 40
+    else
+        until KUBECONFIG="${kubeconfig}" oc exec -n submariner-operator "${routeagentPod}" \
+                -- nslookup "lighthouse-coredns.submariner-operator.svc.cluster.local" \
+                1>/dev/null 2>&1; do
+            if (( waited >= timeout )); then
+                echo "[ERROR] CoreDNS on '${spokeName}' still not forwarding .clusterset.local after ${timeout}s" >&2
+                KUBECONFIG="${kubeconfig}" oc exec -n submariner-operator "${routeagentPod}" \
+                    -- cat /etc/resolv.conf >&2 || true
+                exit 1
+            fi
+            : "CoreDNS reload not yet propagated (${waited}/${timeout}s)"
+            sleep "${interval}"
+            (( waited += interval ))
+        done
+        : "CoreDNS forwarding .clusterset.local on '${spokeName}' after ${waited}s total"
+    fi
+}
+
+#=====================
 # VerifyNginxConnectivity — deploy nginx on source, curl from target
 #
 # $1 = kubeconfig of source spoke (nginx lives here)
@@ -329,9 +417,19 @@ InstallSubctl
 # before running 'subctl verify --context/--tocontext', but we use --kubeconfigs
 # with separate files, making context renaming unnecessary.
 
+# Gate: ensure .clusterset.local DNS is live on every spoke before running curl tests.
+# Without this, the curl pod fires before CoreDNS has reloaded the stub zone written
+# by subctl join, producing exit code 6 (DNS resolution failure) even though
+# ServiceImport and GlobalIngressIP are already allocated.
+typeset -i i j
+for ((i = 0; i < spokeCount; i++)); do
+    WaitForClusterSetDNS \
+        "${spokeKubeconfigs[i]}" \
+        "${spokeNames[i]}"
+done
+
 # Verify connectivity for each pair of spokes
 # With 2 spokes: spoke[0] (source) -> spoke[1] (target)
-typeset -i i j
 for ((i = 0; i < spokeCount; i++)); do
     for ((j = 0; j < spokeCount; j++)); do
         if (( i == j )); then
