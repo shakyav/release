@@ -72,7 +72,7 @@ ocEOF
 # Extract ICSP from the catalog image; apply if present, then wait for MCP update.
 oc image extract "${odfCatalogImage}" --file /icsp.yaml
 if [[ -e "icsp.yaml" ]]; then
-    oc apply --filename="icsp.yaml"
+    oc create -f icsp.yaml --dry-run=client -o yaml --save-config | oc apply -f -
     # Wait for MCPs to start transitioning (Updated=false). || true handles the case where
     # the ICSP triggered no node rollout and MCPs remain Updated throughout — that is benign.
     # oc wait --for=condition=Updated resolves immediately if MCPs are already Updated.
@@ -160,7 +160,7 @@ until [[ -n "${csvName}" ]]; do
         -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
     if [[ -z "${csvName}" ]]; then
         if (( SECONDS - wStart >= wMax )); then
-            echo "[ERROR] Timed out (${wMax}s) waiting for subscription '${subscriptionName}' to register a CSV" >&2
+            : "Timed out (${wMax}s) waiting for subscription '${subscriptionName}' to register a CSV"
             oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml >&2 || true
             oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml >&2 || true
             oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
@@ -178,29 +178,13 @@ done
 if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
         --for=jsonpath='{.status.phase}'=Succeeded \
         --timeout=15m; then
-    echo "[ERROR] CSV '${csvName}' did not reach Succeeded within 15m" >&2
+    : "CSV '${csvName}' did not reach Succeeded within 15m"
     oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
     exit 1
 fi
 : "OLM installed CSV: ${csvName}"
 
-# Wait for the storageclusters.ocs.openshift.io CRD to appear (phase 1), then wait for it
-# to be Established (phase 2). --for=create (available since k8s 1.27 / OCP 4.20) blocks
-# until the object exists, cleanly replacing a manual polling loop. --for=condition=Established
-# then confirms the API server has fully registered the resource type — which is the actual
-# gate before a StorageCluster object can be created.
-if ! oc wait --for=create \
-        crd/storageclusters.ocs.openshift.io \
-        --timeout=5m; then
-    echo "[ERROR] CRD storageclusters.ocs.openshift.io not registered after 5m" >&2
-    # OCS/ODF CRDs currently registered:
-    oc get crd 2>&1 | grep -Ei 'ocs|odf|storage' || true
-    # CSVs in ${odfInstallNamespace}:
-    oc -n "${odfInstallNamespace}" get csv -o wide 2>&1 || true
-    # Pods in ${odfInstallNamespace}:
-    oc -n "${odfInstallNamespace}" get pods -o wide 2>&1 || true
-    exit 1
-fi
+oc wait --for=create crd/storageclusters.ocs.openshift.io --timeout=5m
 oc wait crd/storageclusters.ocs.openshift.io \
     --for=condition='Established' \
     --timeout='2m'
@@ -267,24 +251,22 @@ ocEOF
 # oc wait cannot replace the existence loop — it exits immediately with an error if the
 # resource is absent, rather than polling until it appears.
 typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
-typeset -i rbdWait=0
-typeset -i rbdMax=1800
+typeset -i rbdStart=$SECONDS rbdMax=1800
 until oc -n "${odfInstallNamespace}" get "daemonset/${rbdDs}" 1>/dev/null 2>&1; do
-    if (( rbdWait >= rbdMax )); then
-        echo "[ERROR] DaemonSet ${rbdDs} not found in ${odfInstallNamespace} after ${rbdMax}s" >&2
+    if (( SECONDS - rbdStart >= rbdMax )); then
+        : "DaemonSet ${rbdDs} not found in ${odfInstallNamespace} after ${rbdMax}s"
         oc -n "${odfInstallNamespace}" get daemonset -o wide >&2 || true
         oc -n "${odfInstallNamespace}" get pods -o wide >&2 || true
         exit 1
     fi
-    : "Waiting for DaemonSet ${rbdDs} to appear (${rbdWait}/${rbdMax}s)"
+    : "Waiting for DaemonSet ${rbdDs} to appear ($((SECONDS - rbdStart))/${rbdMax}s)"
     sleep 15
-    (( rbdWait += 15 ))
 done
-: "Found Ceph RBD CSI DaemonSet: ${rbdDs} (after ${rbdWait}s)"
+: "Found Ceph RBD CSI DaemonSet: ${rbdDs} (after $((SECONDS - rbdStart))s)"
 if ! oc rollout status "daemonset/${rbdDs}" \
         -n "${odfInstallNamespace}" \
         --timeout=30m; then
-    echo "[ERROR] Ceph RBD CSI DaemonSet '${rbdDs}' did not roll out cleanly" >&2
+    : "Ceph RBD CSI DaemonSet '${rbdDs}' did not roll out cleanly"
     # DaemonSet pod status:
     oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
     oc -n "${odfInstallNamespace}" get pods \
@@ -298,10 +280,10 @@ if ! oc rollout status "daemonset/${rbdDs}" \
     exit 1
 fi
 
-typeset -r scTimeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT:-240m}"
+typeset -r scTimeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT}"
 if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
         -n "${odfInstallNamespace}" --for=condition='Available' --timeout="${scTimeout}"; then
-    echo "[ERROR] StorageCluster '${ODF_STORAGE_CLUSTER_NAME}' did not reach Available within ${scTimeout}" >&2
+    : "StorageCluster '${ODF_STORAGE_CLUSTER_NAME}' did not reach Available within ${scTimeout}"
     # StorageCluster conditions:
     oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
         -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' >&2 || true
