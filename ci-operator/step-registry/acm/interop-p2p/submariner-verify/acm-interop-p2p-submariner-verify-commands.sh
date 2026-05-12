@@ -88,12 +88,12 @@ LoadSpokeConfig() {
 # immediately after broker-join completes, so the DNS change is often not yet live
 # when the first curl runs.  This function waits for:
 #   Phase 1 — ConfigMap patched:  grep clusterset.local in the CoreDNS Corefile
-#   Phase 2 — reload propagated:  nslookup from an existing routeagent pod succeeds
+#   Phase 2 — Lighthouse ready:   oc wait --for=condition=Available on
+#                                  deployment/submariner-lighthouse-coredns
+#   Phase 3 — reload elapsed:     sleep 35s to cover the CoreDNS 30s reload cycle
 #
 # $1 = kubeconfig of the spoke to check
 # $2 = spoke name (for logging)
-# $3 = test hostname (defaults to submariner-operator.svc.clusterset.local as a
-#      self-contained check that doesn't require a cross-cluster service)
 #=====================
 WaitForClusterSetDNS() {
     typeset kubeconfig="$1"
@@ -130,41 +130,31 @@ WaitForClusterSetDNS() {
     done
     : "CoreDNS ConfigMap on '${spokeName}' patched with clusterset.local after ${waited}s"
 
-    # Phase 2 — wait for CoreDNS to reload the updated Corefile.
-    # CoreDNS default reload interval is 30s. Rather than sleeping a fixed amount,
-    # run nslookup from inside an existing submariner-routeagent pod (which is
-    # guaranteed to be Running) until it can resolve any .clusterset.local name.
-    # Probing the lighthouse-coredns service itself (lighthousecoredns.submariner-operator.svc.cluster.local)
-    # is the cheapest self-contained check — it avoids depending on a cross-cluster ServiceImport.
-    echo "[INFO] Waiting for CoreDNS to start forwarding .clusterset.local queries on '${spokeName}'" >&2
-    typeset routeagentPod
-    routeagentPod="$(
-        KUBECONFIG="${kubeconfig}" oc get pod \
-            -n submariner-operator \
-            -l app=submariner-routeagent \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
-    )"
+    # Phase 2 — confirm the submariner-lighthouse-coredns Deployment is Available.
+    # This deployment is the DNS backend for .clusterset.local queries.  The cluster's
+    # CoreDNS Corefile (already patched in Phase 1) forwards *.clusterset.local to the
+    # ClusterIP of the 'submariner-lighthouse-coredns' Service.
+    #
+    # IMPORTANT: The Submariner Lighthouse CoreDNS service is named
+    # 'submariner-lighthouse-coredns' (NOT 'lighthouse-coredns').  Using the wrong
+    # name in a DNS probe (e.g. nslookup lighthouse-coredns.submariner-operator...)
+    # returns NXDOMAIN on every attempt — causing the probe to spin for its full
+    # timeout even when DNS is correctly configured.  This was the root cause of the
+    # 300s timeout failure in job #2054017434930647040.
+    echo "[INFO] Waiting for submariner-lighthouse-coredns Deployment to be Available on '${spokeName}'" >&2
+    KUBECONFIG="${kubeconfig}" oc -n submariner-operator wait \
+        deployment/submariner-lighthouse-coredns \
+        --for=condition=Available \
+        --timeout=5m
+    : "submariner-lighthouse-coredns is Available on '${spokeName}'"
 
-    if [[ -z "${routeagentPod}" ]]; then
-        # No routeagent pod yet — fall back to a fixed 40s sleep covering one reload cycle.
-        : "No routeagent pod found on '${spokeName}'; sleeping 40s for CoreDNS reload"
-        sleep 40
-    else
-        until KUBECONFIG="${kubeconfig}" oc exec -n submariner-operator "${routeagentPod}" \
-                -- nslookup "lighthouse-coredns.submariner-operator.svc.cluster.local" \
-                1>/dev/null 2>&1; do
-            if (( waited >= timeout )); then
-                echo "[ERROR] CoreDNS on '${spokeName}' still not forwarding .clusterset.local after ${timeout}s" >&2
-                KUBECONFIG="${kubeconfig}" oc exec -n submariner-operator "${routeagentPod}" \
-                    -- cat /etc/resolv.conf >&2 || true
-                exit 1
-            fi
-            : "CoreDNS reload not yet propagated (${waited}/${timeout}s)"
-            sleep "${interval}"
-            (( waited += interval ))
-        done
-        : "CoreDNS forwarding .clusterset.local on '${spokeName}' after ${waited}s total"
-    fi
+    # Phase 3 — allow the cluster's CoreDNS to pick up the stub zone.
+    # CoreDNS polls its ConfigMap every ~30s (reload plugin default).  Sleeping 35s
+    # ensures one full reload cycle has elapsed before the first .clusterset.local
+    # query is issued, without needing to spawn additional pods or exec into pods.
+    : "Sleeping 35s for CoreDNS reload on '${spokeName}'"
+    sleep 35
+    : "CoreDNS reload wait complete on '${spokeName}'"
 }
 
 #=====================
