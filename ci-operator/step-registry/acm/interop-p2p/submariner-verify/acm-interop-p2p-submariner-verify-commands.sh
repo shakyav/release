@@ -195,7 +195,36 @@ VerifyNginxConnectivity() {
     if KUBECONFIG="${kcSource}" oc get service nginx -n default 1>/dev/null 2>&1; then
         echo "[INFO] Service 'nginx' already exists on '${sourceCluster}', skipping expose" >&2
     else
-        KUBECONFIG="${kcSource}" oc -n default expose deployment nginx --port=8080
+        # Use explicit Service YAML instead of 'oc expose deployment nginx --port=8080'.
+        #
+        # WHY: 'oc expose' creates a Service without guaranteeing that spec.ipFamilies
+        # is set in the object written to etcd.  Submariner v0.24.0's lighthouse-agent
+        # performs a strict IP family compatibility check: if spec.ipFamilies is [] or
+        # absent, it sets use-clusterset-ip: "false" and raises IPFamilyNotSupported,
+        # which prevents status.ips from ever being populated — causing the subsequent
+        # ServiceImport polling loop to time out.
+        #
+        # Setting ipFamilyPolicy: SingleStack and ipFamilies: [IPv4] explicitly
+        # guarantees the field is present in the persisted object regardless of whether
+        # the API server's defaulting webhook has had time to run, making this
+        # compatible with Submariner v0.24.0+ and all earlier versions.
+        KUBECONFIG="${kcSource}" oc -n default apply -f - <<'SVCEOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  selector:
+    app: nginx
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+SVCEOF
     fi
 
     # Wait for the Deployment to be Available before exporting.
@@ -325,16 +354,24 @@ VerifyNginxConnectivity() {
 }
 
 #=====================
-# WaitGlobalnetHeadlessServiceReady — wait for headless service GlobalIngressIP
+# VerifyGlobalnetIPAllocation — confirm Globalnet allocated GlobalIngressIPs on a spoke
+#
+# After exporting the ClusterIP nginx service, the Globalnet controller on the source
+# cluster must allocate a GlobalIngressIP for it.  This function polls until at least
+# one GlobalIngressIP is present in the default namespace, confirming that the Globalnet
+# pipeline completed end-to-end.
+#
+# NOTE: This is NOT a headless-service test.  The docs offer headless services as an
+# alternative to ClusterIP; we use ClusterIP and verify Globalnet IP allocation here.
 #
 # $1 = kubeconfig
 # $2 = cluster name (for logging)
 #=====================
-WaitGlobalnetHeadlessServiceReady() {
+VerifyGlobalnetIPAllocation() {
     typeset kubeconfig="$1"
     typeset clusterName="$2"
 
-    echo "[INFO] Checking headless service Globalnet readiness on '${clusterName}'" >&2
+    echo "[INFO] Verifying Globalnet IP allocation on '${clusterName}'" >&2
     typeset -i wait=0
     typeset -i maxWait=180
 
@@ -366,6 +403,7 @@ WaitGlobalnetHeadlessServiceReady() {
     fi
 }
 
+
 #=====================
 # VerifyConnectivity — run subctl verify between two spokes
 #
@@ -381,8 +419,14 @@ VerifyConnectivity() {
     typeset name2="$4"
 
     echo "[INFO] Running subctl verify: ${name1} <-> ${name2}" >&2
+    # --only service-discovery,connectivity matches the scope used in the official docs:
+    #   subctl verify --context cluster-a --tocontext cluster-b \
+    #     --only service-discovery,connectivity --verbose
+    # This skips dataplane-only test suites (e.g. latency) that are unrelated to
+    # cross-cluster service routing and would unnecessarily extend the step's runtime.
     "${subctlBin}" verify \
         --kubeconfigs "${kc1},${kc2}" \
+        --only service-discovery,connectivity \
         --connection-attempts 3 \
         --connection-timeout 60 \
         --verbose \
@@ -433,9 +477,9 @@ for ((i = 0; i < spokeCount; i++)); do
     done
 done
 
-# Check Globalnet headless service readiness on all spokes
+# Confirm Globalnet allocated GlobalIngressIPs on all spokes for the exported nginx service.
 for ((i = 0; i < spokeCount; i++)); do
-    WaitGlobalnetHeadlessServiceReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
+    VerifyGlobalnetIPAllocation "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
 done
 
 # Run subctl verify between first two spokes (covers tunnel + service-discovery)
