@@ -183,8 +183,8 @@ if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
     exit 1
 fi
 : "OLM installed CSV: ${csvName}"
-
-oc wait --for=create crd/storageclusters.ocs.openshift.io --timeout=5m
+oc version
+oc wait --for='create' crd/storageclusters.ocs.openshift.io --timeout=5m
 oc wait crd/storageclusters.ocs.openshift.io \
     --for=condition='Established' \
     --timeout='2m'
