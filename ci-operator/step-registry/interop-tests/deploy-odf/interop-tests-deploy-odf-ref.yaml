@@ -2,7 +2,7 @@ ref:
   as: interop-tests-deploy-odf
   from_image:
     namespace: ocp
-    name: cli-jq
+    name: cli
     tag: latest
   commands: interop-tests-deploy-odf-commands.sh
   timeout: 5h0m0s
