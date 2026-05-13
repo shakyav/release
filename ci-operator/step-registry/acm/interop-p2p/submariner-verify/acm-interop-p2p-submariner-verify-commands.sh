@@ -242,6 +242,62 @@ SVCEOF
         KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
     fi
 
+    # ---- Globalnet / IP-family race-condition workaround ----
+    #
+    # Submariner v0.24.0 race:
+    #   The lighthouse-agent on the TARGET cluster reconciles the new ServiceImport
+    #   within ~1 second of its creation.  At that moment the Globalnet controller
+    #   on the SOURCE cluster has not yet allocated the GlobalIngressIP, so the
+    #   Submariner EndpointSlice has no endpoints and therefore no addressType.
+    #   The lighthouse-agent derives "IP families" from EndpointSlice.addressType;
+    #   an empty EndpointSlice yields IP families [] which fails the IPv4 compatibility
+    #   check → IPFamilyNotSupported condition set → use-clusterset-ip: "false" →
+    #   status.ips is NEVER populated, even after the GlobalIngressIP appears later.
+    #
+    # Fix:
+    #   1. Wait until the GlobalIngressIP is allocated on the source cluster.
+    #      This proves the Globalnet EndpointSlice now has the GlobalIngressIP
+    #      (addressType: IPv4) as its endpoint.
+    #   2. Touch the ServiceExport (add/update an annotation) so the
+    #      lighthouse-agent on the source re-reconciles it.  The updated
+    #      ServiceExport is then synced via the broker to the target, where the
+    #      lighthouse-agent re-evaluates IP family compatibility — this time with
+    #      the correct EndpointSlice data — and clears IPFamilyNotSupported.
+    #
+    # References: job #2054570352700297216 (IPFamilyNotSupported despite explicit
+    # ipFamilies: [IPv4] on the Service).
+    echo "[INFO] Waiting for GlobalIngressIP allocation on '${sourceCluster}' (needed to unblock lighthouse IP-family check)" >&2
+    typeset -i giWait=0
+    typeset -i giMax=180
+    typeset giAllocIP=""
+    while (( giWait < giMax )); do
+        giAllocIP="$(
+            KUBECONFIG="${kcSource}" oc get globalingressips -n default \
+                -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' \
+                2>/dev/null || echo ""
+        )"
+        [[ -n "${giAllocIP}" ]] && break
+        : "GlobalIngressIP not yet allocated on '${sourceCluster}' (${giWait}/${giMax}s)"
+        sleep 10
+        (( giWait += 10 ))
+    done
+    if [[ -z "${giAllocIP}" ]]; then
+        echo "[ERROR] GlobalIngressIP for nginx not allocated on '${sourceCluster}' after ${giMax}s" >&2
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide >&2 || true
+        exit 1
+    fi
+    echo "[INFO] GlobalIngressIP allocated on '${sourceCluster}': ${giAllocIP} (after ${giWait}s)" >&2
+
+    # Touch the ServiceExport to trigger lighthouse re-reconciliation.
+    # The EndpointSlice now has the GlobalIngressIP (addressType: IPv4), so the
+    # next reconcile will see IP families [IPv4] instead of [] and clear
+    # IPFamilyNotSupported.
+    echo "[INFO] Forcing lighthouse re-reconciliation on '${sourceCluster}' via ServiceExport annotation" >&2
+    KUBECONFIG="${kcSource}" oc annotate serviceexport nginx -n default \
+        "submariner.io/reconcile-ts=$(date -u +%s)" --overwrite
+    echo "[INFO] Waiting 30s for re-reconciliation to propagate through broker to '${targetCluster}'" >&2
+    sleep 30
+
     # Wait for ServiceImport to propagate to target cluster WITH status.ips populated.
     #
     # WHY checking existence is insufficient:
