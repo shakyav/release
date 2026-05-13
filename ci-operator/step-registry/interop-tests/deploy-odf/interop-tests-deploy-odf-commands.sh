@@ -6,6 +6,30 @@
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
+#=====================
+# InstallJq — install jq to /tmp/bin if not already in PATH
+#=====================
+# The ocp/cli image ships the latest oc but does not include jq.
+# Download a pinned release on demand and prepend /tmp/bin to PATH.
+InstallJq() {
+    if command -v jq 1>/dev/null; then
+        echo "[INFO] jq already in PATH: $(jq --version 2>&1)" >&2
+        return
+    fi
+    typeset -r jqVersion="1.7.1"
+    typeset jqArch
+    jqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
+    echo "[INFO] Installing jq ${jqVersion} (${jqArch}) to /tmp/bin" >&2
+    mkdir -p /tmp/bin
+    curl -fsSL \
+        "https://github.com/jqlang/jq/releases/download/jq-${jqVersion}/jq-linux-${jqArch}" \
+        -o /tmp/bin/jq
+    chmod +x /tmp/bin/jq
+    export PATH="/tmp/bin:${PATH}"
+    echo "[INFO] jq installed: $(jq --version 2>&1)" >&2
+}
+InstallJq
+
 # Collect ODF must-gather on any failure; timeout keeps it inside the ref grace_period.
 trap '
     (($?)) &&
