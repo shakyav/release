@@ -192,8 +192,6 @@ periodics:
   cron: 0 23 31 2 *
   decorate: true
   decoration_config:
-    sparse_checkout_files:
-    - cnv-ci/Dockerfile
     skip_cloning: true
     timeout: 20h0m0s
   extra_refs:
@@ -277,7 +275,8 @@ periodics:
   cron: 0 23 31 2 *
   decorate: true
   decoration_config:
-    skip_cloning: true
+    sparse_checkout_files:
+    - cnv-ci/Dockerfile
   extra_refs:
   - base_ref: master
     org: RedHatQE

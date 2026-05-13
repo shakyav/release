@@ -220,9 +220,11 @@ WaitAllSubmarinerComponentsReady() {
 
     echo "[INFO] Waiting for submariner-routeagent on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" daemonset/submariner-routeagent submariner-operator 300 "${spokeName}"
+    # routeagent runs on every node (6 on c5n.metal spokes).  Bare-metal image pulls
+    # and OVN kernel initialisation can push past 10 minutes; 20m gives enough headroom.
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-routeagent \
         -n submariner-operator \
-        --timeout=10m
+        --timeout=20m
 
     echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" daemonset/submariner-globalnet submariner-operator 300 "${spokeName}"
