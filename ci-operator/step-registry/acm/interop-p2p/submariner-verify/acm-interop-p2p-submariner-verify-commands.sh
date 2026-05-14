@@ -272,7 +272,7 @@ SVCEOF
 
     # Step 1 — initial export (triggers Globalnet to start GlobalIngressIP allocation).
     echo "[INFO] Exporting nginx service on '${sourceCluster}' (initial export to trigger Globalnet allocation)" >&2
-    KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx || true
+    KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
 
     # Step 2 — wait for GlobalIngressIP to be allocated.
     echo "[INFO] Waiting for GlobalIngressIP allocation on '${sourceCluster}' (max 180s)" >&2
