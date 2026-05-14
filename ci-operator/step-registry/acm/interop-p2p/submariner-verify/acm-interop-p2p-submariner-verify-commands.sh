@@ -235,38 +235,47 @@ SVCEOF
         --for condition=Available \
         --timeout=3m
 
-    echo "[INFO] Exporting nginx service on '${sourceCluster}'" >&2
-    if KUBECONFIG="${kcSource}" oc get serviceexport nginx -n default 1>/dev/null 2>&1; then
-        echo "[INFO] ServiceExport 'nginx' already exists on '${sourceCluster}', skipping" >&2
-    else
-        KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
-    fi
+    # ---- Globalnet / IP-family race-condition workaround (delete-and-reexport) ----
+    #
+    # Submariner v0.24.0 race (confirmed in jobs #2054570352700297216 and #2054707478423146496):
+    #   When `subctl export service` is called, the lighthouse-agent on the TARGET cluster
+    #   reconciles the new broker ServiceImport within ~1 second.  At that moment the
+    #   Globalnet controller on the SOURCE cluster may not yet have allocated the
+    #   GlobalIngressIP, so the broker EndpointSlice has no endpoints and no addressType.
+    #   The lighthouse-agent derives "IP families" from that EndpointSlice; an empty slice
+    #   → "Service IP families []" → IPFamilyNotSupported condition set →
+    #   lighthouse.submariner.io/use-clusterset-ip: "false" → status.ips is NEVER
+    #   populated, even after the GlobalIngressIP appears later.
+    #
+    # Why the annotation-only approach (job #2054570352700297216 fix attempt) failed:
+    #   The `submariner.io/reconcile-ts` annotation on the ServiceExport triggers a
+    #   re-reconciliation on the source cluster and the broker, but the broker's stale
+    #   IP-family data ([] from the initial race) is NOT reset — the lighthouse-agent
+    #   updates the broker ServiceImport with the same stale IP families rather than
+    #   re-reading them from scratch.  Consequently the target cluster's re-evaluation
+    #   (seen in logs as lastTransitionTime updating, generation incrementing) still
+    #   reports IPFamilyNotSupported with "Service IP families []".
+    #
+    # Correct fix — delete-and-reexport after GlobalIngressIP is confirmed allocated:
+    #   1. Export the service once so Globalnet starts the GlobalIngressIP allocation.
+    #   2. Wait until GlobalIngressIP is confirmed allocated on the source cluster.
+    #      Only at this point is the broker EndpointSlice guaranteed to have the
+    #      GlobalIngressIP as an endpoint with addressType: IPv4.
+    #   3. Delete the ServiceExport — this cascade-deletes the broker ServiceImport
+    #      AND the target cluster's local ServiceImport, clearing the poisoned
+    #      use-clusterset-ip: "false" annotation and all stale IPFamilyNotSupported state.
+    #   4. Re-export the service.  The lighthouse-agent now creates a completely fresh
+    #      broker ServiceImport with correct IP families ([IPv4]), which the target
+    #      cluster processes without the race condition.
+    #
+    # References: jobs #2054570352700297216 and #2054707478423146496.
 
-    # ---- Globalnet / IP-family race-condition workaround ----
-    #
-    # Submariner v0.24.0 race:
-    #   The lighthouse-agent on the TARGET cluster reconciles the new ServiceImport
-    #   within ~1 second of its creation.  At that moment the Globalnet controller
-    #   on the SOURCE cluster has not yet allocated the GlobalIngressIP, so the
-    #   Submariner EndpointSlice has no endpoints and therefore no addressType.
-    #   The lighthouse-agent derives "IP families" from EndpointSlice.addressType;
-    #   an empty EndpointSlice yields IP families [] which fails the IPv4 compatibility
-    #   check → IPFamilyNotSupported condition set → use-clusterset-ip: "false" →
-    #   status.ips is NEVER populated, even after the GlobalIngressIP appears later.
-    #
-    # Fix:
-    #   1. Wait until the GlobalIngressIP is allocated on the source cluster.
-    #      This proves the Globalnet EndpointSlice now has the GlobalIngressIP
-    #      (addressType: IPv4) as its endpoint.
-    #   2. Touch the ServiceExport (add/update an annotation) so the
-    #      lighthouse-agent on the source re-reconciles it.  The updated
-    #      ServiceExport is then synced via the broker to the target, where the
-    #      lighthouse-agent re-evaluates IP family compatibility — this time with
-    #      the correct EndpointSlice data — and clears IPFamilyNotSupported.
-    #
-    # References: job #2054570352700297216 (IPFamilyNotSupported despite explicit
-    # ipFamilies: [IPv4] on the Service).
-    echo "[INFO] Waiting for GlobalIngressIP allocation on '${sourceCluster}' (needed to unblock lighthouse IP-family check)" >&2
+    # Step 1 — initial export (triggers Globalnet to start GlobalIngressIP allocation).
+    echo "[INFO] Exporting nginx service on '${sourceCluster}' (initial export to trigger Globalnet allocation)" >&2
+    KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx || true
+
+    # Step 2 — wait for GlobalIngressIP to be allocated.
+    echo "[INFO] Waiting for GlobalIngressIP allocation on '${sourceCluster}' (max 180s)" >&2
     typeset -i giWait=0
     typeset -i giMax=180
     typeset giAllocIP=""
@@ -274,7 +283,7 @@ SVCEOF
         giAllocIP="$(
             KUBECONFIG="${kcSource}" oc get globalingressips -n default \
                 -o jsonpath='{.items[?(@.metadata.name=="nginx")].status.allocatedIP}' \
-                2>/dev/null || echo ""
+                2>/dev/null || true
         )"
         [[ -n "${giAllocIP}" ]] && break
         : "GlobalIngressIP not yet allocated on '${sourceCluster}' (${giWait}/${giMax}s)"
@@ -288,15 +297,31 @@ SVCEOF
     fi
     echo "[INFO] GlobalIngressIP allocated on '${sourceCluster}': ${giAllocIP} (after ${giWait}s)" >&2
 
-    # Touch the ServiceExport to trigger lighthouse re-reconciliation.
-    # The EndpointSlice now has the GlobalIngressIP (addressType: IPv4), so the
-    # next reconcile will see IP families [IPv4] instead of [] and clear
-    # IPFamilyNotSupported.
-    echo "[INFO] Forcing lighthouse re-reconciliation on '${sourceCluster}' via ServiceExport annotation" >&2
-    KUBECONFIG="${kcSource}" oc annotate serviceexport nginx -n default \
-        "submariner.io/reconcile-ts=$(date -u +%s)" --overwrite
-    echo "[INFO] Waiting 30s for re-reconciliation to propagate through broker to '${targetCluster}'" >&2
-    sleep 30
+    # Step 3 — delete the ServiceExport to clear poisoned broker state.
+    # This cascades through broker → target cluster's ServiceImport is also deleted,
+    # removing the use-clusterset-ip: "false" annotation and IPFamilyNotSupported condition.
+    echo "[INFO] Deleting ServiceExport 'nginx' on '${sourceCluster}' to reset broker state" >&2
+    KUBECONFIG="${kcSource}" oc delete serviceexport nginx -n default --ignore-not-found
+
+    # Wait for the ServiceImport to disappear from the target cluster (max 60s).
+    # Guarantees the re-export below creates a genuinely fresh broker ServiceImport.
+    echo "[INFO] Waiting for ServiceImport 'nginx' to be deleted from '${targetCluster}'" >&2
+    typeset -i delWait=0
+    while (( delWait < 60 )); do
+        if ! KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null 2>&1; then
+            echo "[INFO] ServiceImport 'nginx' gone from '${targetCluster}' after ${delWait}s" >&2
+            break
+        fi
+        : "Waiting for ServiceImport deletion on '${targetCluster}' (${delWait}s)"
+        sleep 5
+        (( delWait += 5 ))
+    done
+
+    # Step 4 — re-export with GlobalIngressIP already allocated.
+    # The lighthouse-agent now creates a fresh broker ServiceImport with
+    # correct IP families ([IPv4]) derived from a fully-populated EndpointSlice.
+    echo "[INFO] Re-exporting nginx service on '${sourceCluster}' (GlobalIngressIP already allocated)" >&2
+    KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
 
     # Wait for ServiceImport to propagate to target cluster WITH status.ips populated.
     #
