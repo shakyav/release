@@ -235,46 +235,51 @@ SVCEOF
         --for condition=Available \
         --timeout=3m
 
-    # ---- Globalnet / IP-family race-condition workaround (delete-and-reexport) ----
+    # ---- Globalnet / IP-family race-condition workaround (delete-target-serviceimport) ----
     #
-    # Submariner v0.24.0 race (confirmed in jobs #2054570352700297216 and #2054707478423146496):
-    #   When `subctl export service` is called, the lighthouse-agent on the TARGET cluster
-    #   reconciles the new broker ServiceImport within ~1 second.  At that moment the
-    #   Globalnet controller on the SOURCE cluster may not yet have allocated the
-    #   GlobalIngressIP, so the broker EndpointSlice has no endpoints and no addressType.
-    #   The lighthouse-agent derives "IP families" from that EndpointSlice; an empty slice
-    #   → "Service IP families []" → IPFamilyNotSupported condition set →
-    #   lighthouse.submariner.io/use-clusterset-ip: "false" → status.ips is NEVER
-    #   populated, even after the GlobalIngressIP appears later.
+    # Submariner v0.24.0 race — root cause (confirmed in jobs #2054570352700297216,
+    # #2054707478423146496, #2054891960296017920):
     #
-    # Why the annotation-only approach (job #2054570352700297216 fix attempt) failed:
-    #   The `submariner.io/reconcile-ts` annotation on the ServiceExport triggers a
-    #   re-reconciliation on the source cluster and the broker, but the broker's stale
-    #   IP-family data ([] from the initial race) is NOT reset — the lighthouse-agent
-    #   updates the broker ServiceImport with the same stale IP families rather than
-    #   re-reading them from scratch.  Consequently the target cluster's re-evaluation
-    #   (seen in logs as lastTransitionTime updating, generation incrementing) still
-    #   reports IPFamilyNotSupported with "Service IP families []".
+    #   The race is between TWO asynchronous Submariner components:
+    #     T1: Target lighthouse-agent creates the local ServiceImport (< 1s after broker
+    #         ServiceImport appears).
+    #     T2: Globalnet pushes the broker EndpointSlice with the GlobalIngressIP (a
+    #         separate async step that happens AFTER allocating the GlobalIngressIP on
+    #         the source cluster, typically 1–5s later).
+    #   T1 < T2 → target lighthouse reads an empty broker EndpointSlice → derives
+    #   "Service IP families []" → sets use-clusterset-ip: "false" →
+    #   IPFamilyNotSupported condition → status.ips is NEVER populated.
     #
-    # Correct fix — delete-and-reexport after GlobalIngressIP is confirmed allocated:
-    #   1. Export the service once so Globalnet starts the GlobalIngressIP allocation.
-    #   2. Wait until GlobalIngressIP is confirmed allocated on the source cluster.
-    #      Only at this point is the broker EndpointSlice guaranteed to have the
-    #      GlobalIngressIP as an endpoint with addressType: IPv4.
-    #   3. Delete the ServiceExport — this cascade-deletes the broker ServiceImport
-    #      AND the target cluster's local ServiceImport, clearing the poisoned
-    #      use-clusterset-ip: "false" annotation and all stale IPFamilyNotSupported state.
-    #   4. Re-export the service.  The lighthouse-agent now creates a completely fresh
-    #      broker ServiceImport with correct IP families ([IPv4]), which the target
-    #      cluster processes without the race condition.
+    # Why delete-and-reexport (job #2054891960296017920 fix attempt) also failed:
+    #   Even waiting for GlobalIngressIP.status.allocatedIP on the SOURCE cluster
+    #   before re-exporting is insufficient.  GlobalIngressIP.status.allocatedIP is
+    #   written by Globalnet's first reconciliation step; pushing that IP to the
+    #   BROKER's EndpointSlice is a SEPARATE, subsequent async step.  After re-export,
+    #   the target lighthouse agent again creates the fresh broker ServiceImport
+    #   immediately, racing with Globalnet's push of the same EndpointSlice — so the
+    #   same T1 < T2 race repeats.
     #
-    # References: jobs #2054570352700297216 and #2054707478423146496.
+    # Correct fix — delete only the LOCAL ServiceImport on the target cluster:
+    #   1. Export the service (triggers GlobalIngressIP allocation AND broker sync).
+    #   2. Wait for GlobalIngressIP to be confirmed allocated on the source cluster.
+    #   3. Sleep 30s as a broker-sync guard: Globalnet's second step (pushing the
+    #      EndpointSlice to the broker) typically completes within a few seconds of
+    #      GlobalIngressIP allocation.  30s is conservative and reliable.
+    #   4. If the target ServiceImport has use-clusterset-ip: "false" (poisoned),
+    #      delete ONLY the local ServiceImport on the target cluster.
+    #      — The ServiceExport, GlobalIngressIP, and broker ServiceImport all remain
+    #        intact (no new allocation cycle needed).
+    #      — The target lighthouse-agent sees the deletion, re-reads the broker
+    #        ServiceImport AND its EndpointSlice (which now has the GlobalIngressIP),
+    #        and creates a fresh local ServiceImport with correct IP families [IPv4].
+    #
+    # References: jobs #2054570352700297216, #2054707478423146496, #2054891960296017920.
 
-    # Step 1 — initial export (triggers Globalnet to start GlobalIngressIP allocation).
-    echo "[INFO] Exporting nginx service on '${sourceCluster}' (initial export to trigger Globalnet allocation)" >&2
+    # Step 1 — export the service (triggers GlobalIngressIP allocation).
+    echo "[INFO] Exporting nginx service on '${sourceCluster}'" >&2
     KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
 
-    # Step 2 — wait for GlobalIngressIP to be allocated.
+    # Step 2 — wait for GlobalIngressIP to be allocated on the source cluster.
     echo "[INFO] Waiting for GlobalIngressIP allocation on '${sourceCluster}' (max 180s)" >&2
     typeset -i giWait=0
     typeset -i giMax=180
@@ -297,31 +302,33 @@ SVCEOF
     fi
     echo "[INFO] GlobalIngressIP allocated on '${sourceCluster}': ${giAllocIP} (after ${giWait}s)" >&2
 
-    # Step 3 — delete the ServiceExport to clear poisoned broker state.
-    # This cascades through broker → target cluster's ServiceImport is also deleted,
-    # removing the use-clusterset-ip: "false" annotation and IPFamilyNotSupported condition.
-    echo "[INFO] Deleting ServiceExport 'nginx' on '${sourceCluster}' to reset broker state" >&2
-    KUBECONFIG="${kcSource}" oc delete serviceexport nginx -n default --ignore-not-found
+    # Step 3 — broker-sync guard: wait for Globalnet to push the EndpointSlice.
+    # GlobalIngressIP.status.allocatedIP is set during Globalnet's FIRST reconciliation
+    # pass.  The broker EndpointSlice update is a SECOND async pass.  We cannot query
+    # the broker directly from a spoke kubeconfig, so we use a conservative 30s sleep.
+    echo "[INFO] Sleeping 30s for Globalnet broker EndpointSlice sync (broker-sync guard)" >&2
+    sleep 30
 
-    # Wait for the ServiceImport to disappear from the target cluster (max 60s).
-    # Guarantees the re-export below creates a genuinely fresh broker ServiceImport.
-    echo "[INFO] Waiting for ServiceImport 'nginx' to be deleted from '${targetCluster}'" >&2
-    typeset -i delWait=0
-    while (( delWait < 60 )); do
-        if ! KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null 2>&1; then
-            echo "[INFO] ServiceImport 'nginx' gone from '${targetCluster}' after ${delWait}s" >&2
-            break
-        fi
-        : "Waiting for ServiceImport deletion on '${targetCluster}' (${delWait}s)"
-        sleep 5
-        (( delWait += 5 ))
-    done
-
-    # Step 4 — re-export with GlobalIngressIP already allocated.
-    # The lighthouse-agent now creates a fresh broker ServiceImport with
-    # correct IP families ([IPv4]) derived from a fully-populated EndpointSlice.
-    echo "[INFO] Re-exporting nginx service on '${sourceCluster}' (GlobalIngressIP already allocated)" >&2
-    KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx
+    # Step 4 — if the target ServiceImport is poisoned, delete it to force a fresh
+    # re-read of the broker state.  The ServiceExport and GlobalIngressIP on the source
+    # cluster remain untouched — no new allocation cycle is triggered.
+    typeset siPoisonAnnotation=""
+    if KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default 1>/dev/null 2>&1; then
+        siPoisonAnnotation="$(
+            KUBECONFIG="${kcTarget}" oc get serviceimport nginx -n default \
+                -o jsonpath='{.metadata.annotations.lighthouse\.submariner\.io/use-clusterset-ip}' \
+                2>/dev/null || true
+        )"
+    fi
+    if [[ "${siPoisonAnnotation}" == "false" ]]; then
+        echo "[INFO] ServiceImport 'nginx' on '${targetCluster}' is poisoned (use-clusterset-ip=false)." >&2
+        echo "[INFO] Deleting local ServiceImport to force fresh re-read from broker EndpointSlice." >&2
+        KUBECONFIG="${kcTarget}" oc delete serviceimport nginx -n default --ignore-not-found
+        # Allow the lighthouse-agent to process the deletion event and re-queue reconciliation.
+        sleep 15
+    else
+        : "ServiceImport on '${targetCluster}' is not poisoned (annotation='${siPoisonAnnotation}'), skipping delete"
+    fi
 
     # Wait for ServiceImport to propagate to target cluster WITH status.ips populated.
     #
@@ -435,6 +442,171 @@ SVCEOF
 }
 
 #=====================
+# VerifyHeadlessServiceConnectivity — deploy headless nginx, export, curl from target
+#
+# Creates a headless Service (clusterIP: None) backed by the existing nginx Deployment,
+# exports it with subctl, then curls it from the target cluster over clusterset DNS.
+#
+# How Globalnet handles headless services (differs from ClusterIP):
+#   - No single GlobalIngressIP is allocated for the Service itself.
+#   - Instead, the Globalnet controller allocates a separate GlobalIngressIP for
+#     EACH Pod endpoint that backs the headless service.
+#   - DNS for <svc>.default.svc.clusterset.local returns those per-pod Global IPs.
+#   - There is NO IPFamilyNotSupported / use-clusterset-ip race because Submariner
+#     does not go through the ClusterSetIP allocation path for headless services;
+#     it uses the Headless ServiceImport type and pod-level GlobalIngressIPs instead.
+#   - Therefore a simple export-and-wait (no delete-and-reexport) is sufficient.
+#
+# $1 = kubeconfig of source spoke (headless service lives here)
+# $2 = kubeconfig of target spoke (curl runs from here)
+# $3 = source spoke name (for logging)
+# $4 = target spoke name (for logging)
+#=====================
+VerifyHeadlessServiceConnectivity() {
+    typeset kcSource="$1"
+    typeset kcTarget="$2"
+    typeset sourceCluster="$3"
+    typeset targetCluster="$4"
+
+    echo "[INFO] === Headless service connectivity: ${sourceCluster} -> ${targetCluster} ===" >&2
+
+    # ---- Create headless Service on source cluster ----
+    # clusterIP: None is what makes this headless.
+    # The selector reuses the nginx pods already running from VerifyNginxConnectivity.
+    # ipFamilyPolicy + ipFamilies are explicit for the same reason as the ClusterIP
+    # service above — avoid Submariner lighthouse rejecting a Service with an empty
+    # ipFamilies field (defensive, belt-and-suspenders for headless path too).
+    echo "[INFO] Creating headless Service 'nginx-headless' on '${sourceCluster}'" >&2
+    if KUBECONFIG="${kcSource}" oc get service nginx-headless -n default 1>/dev/null 2>&1; then
+        echo "[INFO] Service 'nginx-headless' already exists on '${sourceCluster}', skipping create" >&2
+    else
+        KUBECONFIG="${kcSource}" oc -n default apply -f - <<'HLSVCEOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-headless
+  namespace: default
+spec:
+  selector:
+    app: nginx
+  clusterIP: None
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+HLSVCEOF
+    fi
+
+    # ---- Export the headless service ----
+    # For headless services Globalnet does NOT use the ClusterSetIP allocation path,
+    # so the IPFamilyNotSupported / use-clusterset-ip race that affects ClusterIP
+    # services does NOT occur here.  A direct export is safe.
+    echo "[INFO] Exporting headless Service 'nginx-headless' on '${sourceCluster}'" >&2
+    if KUBECONFIG="${kcSource}" oc get serviceexport nginx-headless -n default 1>/dev/null 2>&1; then
+        echo "[INFO] ServiceExport 'nginx-headless' already exists on '${sourceCluster}', skipping" >&2
+    else
+        KUBECONFIG="${kcSource}" "${subctlBin}" export service --namespace default nginx-headless
+    fi
+
+    # ---- Wait for pod-level GlobalIngressIPs to be allocated on source ----
+    # For headless services, Globalnet creates one GlobalIngressIP resource per Pod
+    # backing the service (spec.target references the pod, not the service).
+    # DNS can only return results once at least one pod GlobalIngressIP has an
+    # allocatedIP in its status, so we gate on that before testing connectivity.
+    echo "[INFO] Waiting for pod-level GlobalIngressIPs to be allocated on '${sourceCluster}' (max 120s)" >&2
+    typeset -i podGiWait=0
+    typeset -i podGiMax=120
+    typeset podGiCount="0"
+    while (( podGiWait < podGiMax )); do
+        podGiCount="$(
+            KUBECONFIG="${kcSource}" oc get globalingressips -n default \
+                -o jsonpath-as-json='{.items}' 2>/dev/null |
+                jq '[.[] | select(
+                        .spec.target.pod != null
+                        and (.status.allocatedIP // "") != ""
+                    )] | length' || echo "0"
+        )"
+        (( podGiCount > 0 )) && break
+        : "Pod GlobalIngressIPs not yet allocated on '${sourceCluster}' (${podGiWait}/${podGiMax}s)"
+        sleep 10
+        (( podGiWait += 10 ))
+    done
+    if (( podGiCount == 0 )); then
+        echo "[ERROR] No pod-level GlobalIngressIPs allocated on '${sourceCluster}' after ${podGiMax}s" >&2
+        KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide >&2 || true
+        exit 1
+    fi
+    echo "[INFO] ${podGiCount} pod-level GlobalIngressIP(s) allocated on '${sourceCluster}' after ${podGiWait}s" >&2
+    KUBECONFIG="${kcSource}" oc get globalingressips -n default -o wide >&2 || true
+
+    # ---- Wait for headless ServiceImport on target cluster ----
+    # The broker propagates the Headless-type ServiceImport to the target cluster
+    # asynchronously; poll until it appears.
+    echo "[INFO] Waiting for headless ServiceImport 'nginx-headless' on '${targetCluster}' (max 120s)" >&2
+    typeset -i siHWait=0
+    typeset -i siHMax=120
+    until KUBECONFIG="${kcTarget}" oc get serviceimport nginx-headless -n default 1>/dev/null 2>&1; do
+        if (( siHWait >= siHMax )); then
+            echo "[ERROR] ServiceImport 'nginx-headless' did not appear on '${targetCluster}' after ${siHMax}s" >&2
+            KUBECONFIG="${kcTarget}" oc get serviceimports -n default -o wide >&2 || true
+            exit 1
+        fi
+        : "Waiting for headless ServiceImport on '${targetCluster}' (${siHWait}/${siHMax}s)"
+        sleep 10
+        (( siHWait += 10 ))
+    done
+    echo "[INFO] ServiceImport 'nginx-headless' found on '${targetCluster}' after ${siHWait}s" >&2
+
+    # ---- Curl the headless service from the target cluster ----
+    # DNS resolves nginx-headless.default.svc.clusterset.local to the pod-level
+    # GlobalIngressIPs; curl hits one of them.
+    KUBECONFIG="${kcTarget}" oc -n default delete pod tmp-headless-shell \
+        --ignore-not-found --grace-period=0
+
+    echo "[INFO] Running curl from '${targetCluster}' to nginx-headless.default.svc.clusterset.local:8080" >&2
+    KUBECONFIG="${kcTarget}" oc -n default run tmp-headless-shell \
+        --image=quay.io/submariner/nettest \
+        --restart=Never \
+        --command -- \
+        curl nginx-headless.default.svc.clusterset.local:8080
+
+    typeset -i hlWait=0
+    typeset hlPhase=""
+    while (( hlWait < 120 )); do
+        hlPhase="$(
+            KUBECONFIG="${kcTarget}" oc -n default get pod tmp-headless-shell \
+                -o jsonpath='{.status.phase}'
+        )"
+        [[ "${hlPhase}" == "Succeeded" || "${hlPhase}" == "Failed" ]] && break
+        sleep 5
+        (( hlWait += 5 ))
+    done
+    if [[ "${hlPhase}" != "Succeeded" && "${hlPhase}" != "Failed" ]]; then
+        echo "[ERROR] tmp-headless-shell pod did not reach terminal state within 120s (phase: ${hlPhase})" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod tmp-headless-shell >&2 || true
+        exit 1
+    fi
+
+    KUBECONFIG="${kcTarget}" oc -n default logs tmp-headless-shell --tail=50 2>&1 || true
+
+    typeset hlExitCode
+    hlExitCode="$(
+        KUBECONFIG="${kcTarget}" oc -n default get pod tmp-headless-shell \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' || echo ""
+    )"
+    if [[ "${hlExitCode}" != "0" ]]; then
+        echo "[ERROR] curl failed (exitCode=${hlExitCode}) for headless service on '${targetCluster}'" >&2
+        KUBECONFIG="${kcTarget}" oc -n default describe pod tmp-headless-shell 2>&1 || true
+        exit 1
+    fi
+
+    echo "[INFO] Headless service connectivity verified: ${sourceCluster} -> ${targetCluster}" >&2
+}
+
+#=====================
 # VerifyGlobalnetIPAllocation — confirm Globalnet allocated GlobalIngressIPs on a spoke
 #
 # After exporting the ClusterIP nginx service, the Globalnet controller on the source
@@ -543,14 +715,21 @@ for ((i = 0; i < spokeCount; i++)); do
         "${spokeNames[i]}"
 done
 
-# Verify connectivity for each pair of spokes
-# With 2 spokes: spoke[0] (source) -> spoke[1] (target)
+# Verify connectivity for each pair of spokes.
+# With 2 spokes: spoke[0] (source) -> spoke[1] (target).
+# Both ClusterIP (nginx) and headless (nginx-headless) services are tested
+# so that we cover the two distinct Globalnet allocation paths end-to-end.
 for ((i = 0; i < spokeCount; i++)); do
     for ((j = 0; j < spokeCount; j++)); do
         if (( i == j )); then
             continue
         fi
         VerifyNginxConnectivity \
+            "${spokeKubeconfigs[i]}" \
+            "${spokeKubeconfigs[j]}" \
+            "${spokeNames[i]}" \
+            "${spokeNames[j]}"
+        VerifyHeadlessServiceConnectivity \
             "${spokeKubeconfigs[i]}" \
             "${spokeKubeconfigs[j]}" \
             "${spokeNames[i]}" \
