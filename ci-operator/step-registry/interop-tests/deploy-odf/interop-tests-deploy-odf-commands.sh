@@ -208,23 +208,19 @@ if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
 fi
 : "OLM installed CSV: ${csvName}"
 oc version
-oc wait --for='create' crd/storageclusters.ocs.openshift.io --timeout=10m
+# The storageclusters CRD is guaranteed to exist (and be Established) once the CSV reaches
+# Succeeded — OLM creates and establishes all CRDs in a CSV before marking it Succeeded.
+# A belt-and-suspenders Established check is kept, but --for=create is not needed and would
+# fail on oc clients older than OCP 4.14 that do not support that condition type.
 oc wait crd/storageclusters.ocs.openshift.io \
     --for=condition='Established' \
     --timeout='5m'
 
-# Wait for the ODF operator deployment to be ready before creating the StorageCluster.
-# The CRD being Established happens before the operator pod reaches Available; on bare metal
-# nodes this gap can be significant. Creating the StorageCluster while the operator is still
-# initializing produces partial DaemonSet specs that leave CSI node plugin pods permanently
-# stuck in ContainerCreating — which was the root cause of the 180m StorageCluster timeout.
-#
-# NOTE: ODF 4.16+ (rhodf bundle) renamed the operator deployment from 'ocs-operator' to
-# 'odf-operator'. Waiting for 'ocs-operator' produces NotFound in ODF 4.20+.
-oc wait deployment/odf-operator \
-    -n "${odfInstallNamespace}" \
-    --for=condition='Available' \
-    --timeout='15m'
+# No separate deployment wait is needed here: OLM only marks a CSV as Succeeded after ALL
+# deployments it manages have reached the Available state. The CSV Succeeded check in Phase 2
+# above already guarantees the operator pod is running and its reconciliation loop is active.
+# Hardcoding a deployment name (ocs-operator, odf-operator, …) is brittle — the name changes
+# across ODF versions and bundles — and adds no safety margin.
 
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
