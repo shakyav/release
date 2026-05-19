@@ -4,20 +4,6 @@
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
-# ocp/cli does not ship jq; download a pinned release if absent.
-InstallJq() {
-    command -v jq 1>/dev/null && return
-    typeset -r jqVersion="1.7.1"
-    typeset jqArch
-    jqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-    mkdir -p /tmp/bin
-    curl -fsSL \
-        "https://github.com/jqlang/jq/releases/download/jq-${jqVersion}/jq-linux-${jqArch}" \
-        -o /tmp/bin/jq
-    chmod +x /tmp/bin/jq
-    export PATH="/tmp/bin:${PATH}"
-}
-InstallJq
 
 trap '
     (($?)) &&
