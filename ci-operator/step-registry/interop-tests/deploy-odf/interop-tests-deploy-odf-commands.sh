@@ -1,36 +1,24 @@
 #!/bin/bash
 #
 # Deploy ODF/OCS on the target cluster (hub or managed spoke when ODF_DEPLOY_ON_SPOKE=true).
-# Merges cluster pull secret with ODF Quay credentials via process substitution,
-# applies catalog/subscription/StorageCluster, and sets the default storage class.
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
-#=====================
-# InstallJq — install jq to /tmp/bin if not already in PATH
-#=====================
-# The ocp/cli image ships the latest oc but does not include jq.
-# Download a pinned release on demand and prepend /tmp/bin to PATH.
+# ocp/cli does not ship jq; download a pinned release if absent.
 InstallJq() {
-    if command -v jq 1>/dev/null; then
-        echo "[INFO] jq already in PATH: $(jq --version 2>&1)" >&2
-        return
-    fi
+    command -v jq 1>/dev/null && return
     typeset -r jqVersion="1.7.1"
     typeset jqArch
     jqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-    echo "[INFO] Installing jq ${jqVersion} (${jqArch}) to /tmp/bin" >&2
     mkdir -p /tmp/bin
     curl -fsSL \
         "https://github.com/jqlang/jq/releases/download/jq-${jqVersion}/jq-linux-${jqArch}" \
         -o /tmp/bin/jq
     chmod +x /tmp/bin/jq
     export PATH="/tmp/bin:${PATH}"
-    echo "[INFO] jq installed: $(jq --version 2>&1)" >&2
 }
 InstallJq
 
-# Collect ODF must-gather on any failure; timeout keeps it inside the ref grace_period.
 trap '
     (($?)) &&
     timeout 8m oc adm must-gather \
@@ -39,25 +27,19 @@ trap '
 ' EXIT
 
 if [[ "${ODF_DEPLOY_ON_SPOKE}" == "true" ]]; then
-    # ODF_DEPLOY_ON_SPOKE=true requires managed-cluster-kubeconfig written by cluster-install step.
     [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]] && exit 1
     export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 fi
 
-# ODF_OPERATOR_CHANNEL, ODF_SUBSCRIPTION_NAME, ODF_VOLUME_SIZE, ODF_BACKEND_STORAGE_CLASS
-# are Step Input Env Vars (ref.yaml) guaranteed by CI Operator — no local shadow vars needed.
 typeset -r odfInstallNamespace="openshift-storage"
-
 typeset -r odfCatalogImage="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_VERSION_MAJOR_MINOR}"
 typeset -r odfCatalogName="odf-catalogsource"
 typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
 
-# Credentials file is mounted by CI Operator from the odf-quay-credentials secret.
 [[ ! -f "${odfQuayCredentialsFile}" ]] && exit 1
 
-# Merge cluster pull secret with ODF Quay credentials in memory (no temp files).
-# set +x inside the process substitution suppresses xtrace only for the subshell that
-# runs oc get secret, preventing the decoded pull-secret JSON from appearing in CI logs.
+# Merge cluster pull secret with ODF Quay credentials; set +x in the subshell suppresses
+# the decoded pull-secret JSON from CI logs.
 oc -n openshift-config set data secret/pull-secret \
     --from-file .dockerconfigjson=<(
         jq '. * input' <(set +x
@@ -66,13 +48,10 @@ oc -n openshift-config set data secret/pull-secret \
         ) "${odfQuayCredentialsFile}"
     )
 
-# Move into a tmp folder with write access.
 pushd /tmp
 
-# Create install namespace.
 oc create namespace "${odfInstallNamespace}" --dry-run=client -o yaml | oc apply -f -
 
-# Deploy operator group.
 {
     oc create -f - --dry-run=client -o json --save-config |
     jq -c \
@@ -93,14 +72,10 @@ spec:
   - placeholder
 ocEOF
 
-# Extract ICSP from the catalog image; apply if present, then wait for MCP update.
 oc image extract "${odfCatalogImage}" --file /icsp.yaml
 if [[ -e "icsp.yaml" ]]; then
     oc create -f icsp.yaml --dry-run=client -o yaml --save-config | oc apply -f -
-    # Wait for MCPs to start transitioning (Updated=false). || true handles the case where
-    # the ICSP triggered no node rollout and MCPs remain Updated throughout — that is benign.
-    # oc wait --for=condition=Updated resolves immediately if MCPs are already Updated.
-    # The real failure gate is this second oc wait: if MCPs never reach Updated, it fails.
+    # MCPs already in Updated state satisfy the first condition immediately; || true is benign.
     oc wait mcp --all --for=condition=Updated=false --timeout=2m || true
     oc wait mcp --all --for=condition=Updated --timeout=30m
 fi
@@ -133,7 +108,6 @@ ocEOF
 oc wait "catalogSource/${odfCatalogName}" -n openshift-marketplace \
     --for=jsonpath='{.status.connectionState.lastObservedState}=READY' --timeout='10m'
 
-# Label required for ocs-ci tests.
 oc label "CatalogSource/${odfCatalogName}" -n openshift-marketplace ocs-operator-internal=true
 
 typeset subscriptionName=''
@@ -167,15 +141,8 @@ spec:
 ocEOF
 )"
 
-# Monitor operator installation — two phases.
-#
-# Phase 1 — Subscription registration (5 min): poll until OLM populates installedCSV.
-# 'oc wait' cannot test for a non-empty value (--for=jsonpath requires a known exact value),
-# so a loop is required. Use the fully-qualified resource type to avoid collision with the ACM
-# subscriptions CRD when ACM is installed on the same cluster. Transient "not found" stderr
-# is expected while the Subscription is being reconciled; || true suppresses it without hiding
-# real failures. $SECONDS is used for timing to avoid manual date +%s arithmetic; wStart
-# captures the current value so the parent shell's SECONDS counter is unaffected.
+# Phase 1: poll until OLM populates installedCSV — oc wait requires a known exact value so
+# a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
 typeset csvName=''
 typeset -i wStart=$SECONDS wInt=10 wMax=300
 until [[ -n "${csvName}" ]]; do
@@ -184,7 +151,6 @@ until [[ -n "${csvName}" ]]; do
         -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
     if [[ -z "${csvName}" ]]; then
         if (( SECONDS - wStart >= wMax )); then
-            : "Timed out (${wMax}s) waiting for subscription '${subscriptionName}' to register a CSV"
             oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml >&2 || true
             oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml >&2 || true
             oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
@@ -196,39 +162,22 @@ until [[ -n "${csvName}" ]]; do
 done
 : "OLM registered CSV: ${csvName}"
 
-# Phase 2 — CSV installation (15 min): oc wait until the CSV reaches Succeeded.
-# The CSV name is now known, so --for=jsonpath with the exact expected value is possible.
-# This phase catches OLM install failures that registering installedCSV alone does not.
+# Phase 2: CSV name is now known; oc wait with the exact value is safe.
 if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
         --for=jsonpath='{.status.phase}'=Succeeded \
         --timeout=15m; then
-    : "CSV '${csvName}' did not reach Succeeded within 15m"
     oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
     exit 1
 fi
 : "OLM installed CSV: ${csvName}"
 oc version
 
-# Phase 3 — wait for the storageclusters CRD to exist, then be Established (10 min total).
-#
-# odf-operator is a META-OPERATOR: its CSV reaching Succeeded only means the odf-operator pod
-# itself is running. It then asynchronously installs sub-operators (ocs-operator,
-# noobaa-operator, rook-ceph-operator). The storageclusters.ocs.openshift.io CRD is owned by
-# ocs-operator (a sub-operator), NOT by odf-operator directly — so it does NOT exist at the
-# moment the odf-operator CSV is marked Succeeded.
-#
-# Two-step approach:
-#   Step 1: --for=create blocks until the CRD object exists (up to 10m). This avoids
-#           immediately running --for=condition=Established on a non-existent resource,
-#           which would fail instantly with "NotFound" instead of waiting.
-#   Step 2: --for=condition=Established confirms the API server has ingested the schema.
-oc wait crd/storageclusters.ocs.openshift.io --for=create --timeout=15m
-oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' --timeout=15m
-
-# No separate deployment wait needed: odf-operator's sub-operators are already running once
-# the storageclusters CRD is Established (ocs-operator owns that CRD and its reconciliation
-# loop is active by the time it creates the CRD). Hardcoding a deployment name is brittle —
-# the name changes across ODF versions and rhodf bundle releases.
+# Phase 3: odf-operator is a meta-operator — its CSV Succeeded only means the odf-operator
+# pod is running. Sub-operators (ocs-operator, noobaa-operator, rook-ceph-operator) are
+# installed asynchronously afterward; storageclusters.ocs.openshift.io is owned by ocs-operator
+# and does not exist until it runs. --for=create blocks until the object appears.
+oc wait crd/storageclusters.ocs.openshift.io --for=create --timeout=10m
+oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' --timeout=5m
 
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
@@ -271,39 +220,16 @@ spec:
     resources: {}
 ocEOF
 
-# Wait for the Ceph RBD CSI node plugin DaemonSet to roll out on all ODF-labeled nodes
-# before relying on the StorageCluster Available condition. A CSI node plugin pod stuck in
-# ContainerCreating will block Ceph OSD join → NooBaa PVC provisioning → StorageCluster
-# Available, but only surfaces as a timeout 180 minutes later. Catching it here fails fast
-# with actionable output.
-#
-# ODF names the RBD CSI node-plugin DaemonSet deterministically: <namespace>.rbd.csi.ceph.com-nodeplugin.
-# Using the known name avoids complex jsonpath discovery and makes the intent explicit.
-# oc wait cannot replace the existence loop — it exits immediately with an error if the
-# resource is absent, rather than polling until it appears.
+# Wait for the Ceph RBD CSI node plugin DaemonSet before relying on StorageCluster Available.
+# A stuck CSI node plugin pod blocks OSD join and surfaces only as a 180m timeout otherwise.
+# DaemonSet name is deterministic: <namespace>.rbd.csi.ceph.com-nodeplugin.
 typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
-typeset -i rbdStart=$SECONDS rbdMax=1800
-until oc -n "${odfInstallNamespace}" get "daemonset/${rbdDs}" 1>/dev/null 2>&1; do
-    if (( SECONDS - rbdStart >= rbdMax )); then
-        : "DaemonSet ${rbdDs} not found in ${odfInstallNamespace} after ${rbdMax}s"
-        oc -n "${odfInstallNamespace}" get daemonset -o wide >&2 || true
-        oc -n "${odfInstallNamespace}" get pods -o wide >&2 || true
-        exit 1
-    fi
-    : "Waiting for DaemonSet ${rbdDs} to appear ($((SECONDS - rbdStart))/${rbdMax}s)"
-    sleep 15
-done
-: "Found Ceph RBD CSI DaemonSet: ${rbdDs} (after $((SECONDS - rbdStart))s)"
-if ! oc rollout status "daemonset/${rbdDs}" \
-        -n "${odfInstallNamespace}" \
-        --timeout=30m; then
-    : "Ceph RBD CSI DaemonSet '${rbdDs}' did not roll out cleanly"
-    # DaemonSet pod status:
+oc wait "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --for=create --timeout=30m
+if ! oc rollout status "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --timeout=30m; then
     oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
     oc -n "${odfInstallNamespace}" get pods \
         -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
         | grep -i plugin >&2 || true
-    # Describe first non-Running CSI pod:
     oc -n "${odfInstallNamespace}" get pods --no-headers \
         -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
         | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
@@ -311,23 +237,16 @@ if ! oc rollout status "daemonset/${rbdDs}" \
     exit 1
 fi
 
-typeset -r scTimeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT}"
 if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
-        -n "${odfInstallNamespace}" --for=condition='Available' --timeout="${scTimeout}"; then
-    : "StorageCluster '${ODF_STORAGE_CLUSTER_NAME}' did not reach Available within ${scTimeout}"
-    # StorageCluster conditions:
+        -n "${odfInstallNamespace}" --for=condition='Available' \
+        --timeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT}"; then
     oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
         -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' >&2 || true
-    # Non-Running pods in openshift-storage:
-    oc -n "${odfInstallNamespace}" get pods \
-        --field-selector='status.phase!=Running' -o wide >&2 || true
-    # Pending PVCs:
-    oc -n "${odfInstallNamespace}" get pvc \
-        --field-selector='status.phase!=Bound' -o wide >&2 || true
+    oc -n "${odfInstallNamespace}" get pods --field-selector='status.phase!=Running' -o wide >&2 || true
+    oc -n "${odfInstallNamespace}" get pvc --field-selector='status.phase!=Bound' -o wide >&2 || true
     exit 1
 fi
 
 oc get sc -o name | xargs -I{} oc annotate {} storageclass.kubernetes.io/is-default-class-
-# StorageClass name is derived from ODF_STORAGE_CLUSTER_NAME.
 oc annotate storageclass "${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd" storageclass.kubernetes.io/is-default-class=true
 true
