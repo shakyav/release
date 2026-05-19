@@ -208,19 +208,27 @@ if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
 fi
 : "OLM installed CSV: ${csvName}"
 oc version
-# The storageclusters CRD is guaranteed to exist (and be Established) once the CSV reaches
-# Succeeded — OLM creates and establishes all CRDs in a CSV before marking it Succeeded.
-# A belt-and-suspenders Established check is kept, but --for=create is not needed and would
-# fail on oc clients older than OCP 4.14 that do not support that condition type.
-oc wait crd/storageclusters.ocs.openshift.io \
-    --for=condition='Established' \
-    --timeout='5m'
 
-# No separate deployment wait is needed here: OLM only marks a CSV as Succeeded after ALL
-# deployments it manages have reached the Available state. The CSV Succeeded check in Phase 2
-# above already guarantees the operator pod is running and its reconciliation loop is active.
-# Hardcoding a deployment name (ocs-operator, odf-operator, …) is brittle — the name changes
-# across ODF versions and bundles — and adds no safety margin.
+# Phase 3 — wait for the storageclusters CRD to exist, then be Established (10 min total).
+#
+# odf-operator is a META-OPERATOR: its CSV reaching Succeeded only means the odf-operator pod
+# itself is running. It then asynchronously installs sub-operators (ocs-operator,
+# noobaa-operator, rook-ceph-operator). The storageclusters.ocs.openshift.io CRD is owned by
+# ocs-operator (a sub-operator), NOT by odf-operator directly — so it does NOT exist at the
+# moment the odf-operator CSV is marked Succeeded.
+#
+# Two-step approach:
+#   Step 1: --for=create blocks until the CRD object exists (up to 10m). This avoids
+#           immediately running --for=condition=Established on a non-existent resource,
+#           which would fail instantly with "NotFound" instead of waiting.
+#   Step 2: --for=condition=Established confirms the API server has ingested the schema.
+oc wait crd/storageclusters.ocs.openshift.io --for=create --timeout=15m
+oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' --timeout=15m
+
+# No separate deployment wait needed: odf-operator's sub-operators are already running once
+# the storageclusters CRD is Established (ocs-operator owns that CRD and its reconciliation
+# loop is active by the time it creates the CRD). Hardcoding a deployment name is brittle —
+# the name changes across ODF versions and rhodf bundle releases.
 
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
