@@ -22,7 +22,7 @@ ref:
       cpu: 100m
       memory: 200Mi
   dependencies:
-    - name: "release:latest"
+    - name: "release:target"
       env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
   env:
   - name: BW_PATH
@@ -57,5 +57,5 @@ ref:
     default: "false"
     documentation: |-
       When true, require managed-cluster-kubeconfig and run OCP upgrade tests only
-      Set ORIGINAL_RELEASE_IMAGE_LATEST for --ocp-image. When false, use default kubeconfig and smoke tests;
+      Uses OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE (release:target) for --ocp-image. When false, use default kubeconfig and smoke tests;
       mapTestsForComponentReadiness still runs when MAP_TESTS=true.

@@ -10,6 +10,9 @@ ref:
     requests:
       cpu: '1'
       memory: 500Mi
+  dependencies:
+  - name: "release:target"
+    env: "OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE"
   env:
   - name: TARGET_CHANNEL
     default: ""
@@ -18,5 +21,5 @@ ref:
     default: "2h"
     documentation: Time to wait for clusterversion upgrade to complete. Accepts any oc wait time unit (e.g. 30m, 2h, 7200s).
   documentation: |-
-    Upgrades the Hub cluster to the target release version (ORIGINAL_RELEASE_IMAGE_TARGET / release:target).
+    Upgrades the Hub cluster to the target release version (release:target via OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE).
     Cluster health check runs in the subsequent Step.

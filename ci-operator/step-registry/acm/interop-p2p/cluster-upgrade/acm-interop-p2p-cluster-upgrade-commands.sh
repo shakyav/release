@@ -1,20 +1,15 @@
 #!/bin/bash
 #
-# Upgrades the hub cluster to the target release image resolved from ORIGINAL_RELEASE_IMAGE_TARGET.
+# Upgrades the hub cluster to the target release image (OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE,
+# sourced from release:target via the ref dependencies).
 # Patches TARGET_CHANNEL, then initiates and waits for the clusterversion upgrade to complete.
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
 # [[ -n ]] guards against empty jq output (missing field returns ""; jq exits 0 so set -e alone is insufficient).
 typeset targetVersion
-targetVersion="$(oc adm release info "${ORIGINAL_RELEASE_IMAGE_TARGET}" -o json | jq -r '.metadata.version')"
+targetVersion="$(oc adm release info "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" -o json | jq -r '.metadata.version')"
 [[ -n "${targetVersion}" ]]
-
-typeset digest
-digest="$(oc adm release info "${ORIGINAL_RELEASE_IMAGE_TARGET}" -o json | jq -r '.digest')"
-[[ -n "${digest}" ]]
-
-typeset imgRepo="${ORIGINAL_RELEASE_IMAGE_TARGET%:*}"
 
 # Patch channel; KUBECONFIG is set by CI Operator to the hub cluster.
 oc patch clusterversion version --type merge \
@@ -22,7 +17,7 @@ oc patch clusterversion version --type merge \
 
 # Initiate the upgrade.
 oc adm upgrade \
-    --to-image="${imgRepo}@${digest}" \
+    --to-image="${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" \
     --allow-explicit-upgrade \
     --allow-upgrade-with-warnings \
     --force
