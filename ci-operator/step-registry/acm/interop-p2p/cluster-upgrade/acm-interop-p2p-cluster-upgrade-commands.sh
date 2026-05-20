@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Upgrades the hub cluster to the release image in OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
-# (sourced from release:latest via the ref dependency).
+# (sourced from release:target via the ref dependency).
 # Patches ACM_CLUSTER_UPGRADE_TARGET_CHANNEL when set, admin-ack from Upgradeable condition, then initiates
 # and waits for clusterversion upgrade to complete.
 #
