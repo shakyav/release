@@ -18,5 +18,5 @@ ref:
     default: "2h"
     documentation: Time to wait for clusterversion upgrade to complete. Accepts any oc wait time unit (e.g. 30m, 2h, 7200s).
   documentation: |-
-    Upgrades the Hub cluster to the latest Release Candidate (RC) version.
+    Upgrades the Hub cluster to the target release version (ORIGINAL_RELEASE_IMAGE_TARGET / release:target).
     Cluster health check runs in the subsequent Step.
