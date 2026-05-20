@@ -112,7 +112,7 @@ tests:
       ODF_VERSION_MAJOR_MINOR: "4.21"
       OPERATORS: |
         [
-          {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.15", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
+          {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.16", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
         ]
       TARGET_CHANNEL: candidate-4.22
       USER_TAGS: |
