@@ -1,7 +1,6 @@
 ref:
   as: interop-tests-deploy-odf
-  from: cli-jq
-  cli: latest
+  from: cli
   commands: interop-tests-deploy-odf-commands.sh
   timeout: 5h0m0s
   grace_period: 10m0s
