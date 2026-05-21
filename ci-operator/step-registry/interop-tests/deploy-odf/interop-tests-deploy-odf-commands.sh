@@ -133,19 +133,20 @@ ocEOF
 # Phase 1: poll until OLM populates installedCSV — oc wait requires a known exact value so
 # a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
 typeset csvName=''
-typeset -i wStart=$SECONDS wInt=10 wMax=300
+typeset -i wInt=10 wMax=300
+SECONDS=0
 until [[ -n "${csvName}" ]]; do
     csvName="$(oc -n "${odfInstallNamespace}" \
         get "subscriptions.operators.coreos.com/${subscriptionName}" \
-        -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+        -o jsonpath='{.status.installedCSV}' || true)"
     if [[ -z "${csvName}" ]]; then
-        if (( SECONDS - wStart >= wMax )); then
+        if (( SECONDS >= wMax )); then
             oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml || true
             oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml || true
             oc -n "${odfInstallNamespace}" get csv -o wide || true
             exit 1
         fi
-        : "Waiting for subscription installedCSV ($((SECONDS - wStart))/${wMax}s)"
+        : "Waiting for subscription installedCSV (${SECONDS}/${wMax}s)"
         sleep "${wInt}"
     fi
 done
