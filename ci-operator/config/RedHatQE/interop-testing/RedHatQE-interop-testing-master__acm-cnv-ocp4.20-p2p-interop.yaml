@@ -45,9 +45,8 @@ images:
     to: virtctl-sshpass
 releases:
   initial:
-    candidate:
-      product: ocp
-      stream: nightly
+    release:
+      channel: stable
       version: "4.19"
   latest:
     prerelease:
@@ -63,18 +62,11 @@ resources:
 tests:
 - as: acm-cnv-p2p-aws-420
   cron: 0 23 31 2 *
-  reporter_config:
-    channel: '#forum-p2p-cspi'
-    job_states_to_report:
-    - success
-    - failure
-    - error
-    report_template: '{{if eq .Status.State "success"}} :slack-green: Job *{{.Spec.Job}}*
-      ended with *{{.Status.State}}*. <{{.Status.URL}}|View logs> {{else}} :failed:
-      Job *{{.Spec.Job}}* ended with *{{.Status.State}}*. <{{.Status.URL}}|View logs>
-      {{end}}'
   steps:
     cluster_profile: aws-cspi-qe
+    dependencies:
+      OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:latest
     env:
       ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.19"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke

@@ -50,11 +50,11 @@ images:
     from: openshift-virtualization-tests
     to: openshift-virtualization-tests-sshpass
 releases:
-  latest:
+  initial:
     release:
       channel: stable
       version: "4.21"
-  target:
+  latest:
     candidate:
       product: ocp
       stream: nightly
@@ -70,8 +70,8 @@ tests:
   steps:
     cluster_profile: aws-cspi-qe
     dependencies:
-      OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:latest
-      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:target
+      OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:latest
     env:
       ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.21"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke

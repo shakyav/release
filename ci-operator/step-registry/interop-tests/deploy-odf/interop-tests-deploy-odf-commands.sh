@@ -4,20 +4,9 @@
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
-# ocp/cli does not ship jq; download a pinned release if absent.
-InstallJq() {
-    command -v jq 1>/dev/null && return
-    typeset -r jqVersion="1.7.1"
-    typeset jqArch
-    jqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-    mkdir -p /tmp/bin
-    curl -fsSL \
-        "https://github.com/jqlang/jq/releases/download/jq-${jqVersion}/jq-linux-${jqArch}" \
-        -o /tmp/bin/jq
-    chmod +x /tmp/bin/jq
-    export PATH="/tmp/bin:${PATH}"
-}
-InstallJq
+eval "$(
+    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+)"; EnsureReqs jq
 
 trap '
     (($?)) &&
@@ -27,7 +16,7 @@ trap '
 ' EXIT
 
 if [[ "${ODF_DEPLOY_ON_SPOKE}" == "true" ]]; then
-    [[ ! -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]] && exit 1
+    [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
     export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 fi
 
@@ -36,7 +25,7 @@ typeset -r odfCatalogImage="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_
 typeset -r odfCatalogName="odf-catalogsource"
 typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
 
-[[ ! -f "${odfQuayCredentialsFile}" ]] && exit 1
+[ -f "${odfQuayCredentialsFile}" ]
 
 # Merge cluster pull secret with ODF Quay credentials; set +x in the subshell suppresses
 # the decoded pull-secret JSON from CI logs.
@@ -151,9 +140,9 @@ until [[ -n "${csvName}" ]]; do
         -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
     if [[ -z "${csvName}" ]]; then
         if (( SECONDS - wStart >= wMax )); then
-            oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml >&2 || true
-            oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml >&2 || true
-            oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
+            oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml || true
+            oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml || true
+            oc -n "${odfInstallNamespace}" get csv -o wide || true
             exit 1
         fi
         : "Waiting for subscription installedCSV ($((SECONDS - wStart))/${wMax}s)"
@@ -166,7 +155,7 @@ done
 if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
         --for=jsonpath='{.status.phase}'=Succeeded \
         --timeout=15m; then
-    oc -n "${odfInstallNamespace}" get csv -o wide >&2 || true
+    oc -n "${odfInstallNamespace}" get csv -o wide || true
     exit 1
 fi
 : "OLM installed CSV: ${csvName}"
@@ -225,14 +214,14 @@ ocEOF
 typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
 oc wait "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --for=create --timeout=30m
 if ! oc rollout status "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --timeout=30m; then
-    oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide >&2 || true
+    oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide || true
     oc -n "${odfInstallNamespace}" get pods \
         -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
-        | grep -i plugin >&2 || true
+        | grep -i plugin || true
     oc -n "${odfInstallNamespace}" get pods --no-headers \
         -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
         | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
-        | xargs -r oc -n "${odfInstallNamespace}" describe pod >&2 || true
+        | xargs -r oc -n "${odfInstallNamespace}" describe pod || true
     exit 1
 fi
 
@@ -240,9 +229,9 @@ if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
         -n "${odfInstallNamespace}" --for=condition='Available' \
         --timeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT}"; then
     oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
-        -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' >&2 || true
-    oc -n "${odfInstallNamespace}" get pods --field-selector='status.phase!=Running' -o wide >&2 || true
-    oc -n "${odfInstallNamespace}" get pvc --field-selector='status.phase!=Bound' -o wide >&2 || true
+        -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' || true
+    oc -n "${odfInstallNamespace}" get pods --field-selector='status.phase!=Running' -o wide || true
+    oc -n "${odfInstallNamespace}" get pvc --field-selector='status.phase!=Bound' -o wide || true
     exit 1
 fi
 
