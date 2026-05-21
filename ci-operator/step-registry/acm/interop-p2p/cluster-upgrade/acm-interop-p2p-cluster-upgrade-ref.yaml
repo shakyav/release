@@ -8,7 +8,7 @@ ref:
       cpu: '1'
       memory: 500Mi
   dependencies:
-  - name: "release:target"
+  - name: "release:latest"
     env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
   env:
   - name: ACM_CLUSTER_UPGRADE_TARGET_CHANNEL
@@ -23,7 +23,7 @@ ref:
       Passed directly to oc wait --timeout.
   documentation: |-
     Upgrades the hub cluster to the version resolved from
-    OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE (provided by CI via the release:target dependency).
+    OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE (provided by CI via the release:latest dependency).
 
     When ACM_CLUSTER_UPGRADE_TARGET_CHANNEL is non-empty, patches clusterversion.spec.channel before
     initiating the upgrade. Patches admin-ack ConfigMap when the Upgradeable condition
@@ -35,5 +35,5 @@ ref:
     Env vars consumed:
       ACM_CLUSTER_UPGRADE_TARGET_CHANNEL      - update channel (default: ""; leaves channel unchanged)
       ACM_UPGRADE_TIMEOUT                     - upgrade wait limit (default: 2h)
-      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE - release image to upgrade to (injected by CI via release:target)
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE - release image to upgrade to (injected by CI via release:latest)
       SHARED_DIR                              - shared artifact directory (provides hub kubeconfig)

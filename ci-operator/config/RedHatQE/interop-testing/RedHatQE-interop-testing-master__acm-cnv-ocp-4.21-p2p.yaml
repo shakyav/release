@@ -51,11 +51,11 @@ images:
     from: openshift-virtualization-tests
     to: openshift-virtualization-tests-sshpass
 releases:
-  latest:
+  initial:
     release:
       channel: stable
       version: "4.20"
-  target:
+  latest:
     prerelease:
       product: ocp
       version_bounds:
@@ -72,8 +72,8 @@ tests:
   steps:
     cluster_profile: aws-cspi-qe
     dependencies:
-      OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:latest
-      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:target
+      OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:latest
     env:
       ACM_CLUSTER_UPGRADE_TARGET_CHANNEL: candidate-4.21
       ACM_SPOKE_CLUSTER_COUNT: "1"
