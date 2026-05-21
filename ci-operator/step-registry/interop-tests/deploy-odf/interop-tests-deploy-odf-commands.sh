@@ -130,36 +130,40 @@ spec:
 ocEOF
 )"
 
-# Phase 1: poll until OLM populates installedCSV — oc wait requires a known exact value so
-# a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
-typeset csvName=''
-typeset -i wInt=10 wMax=300
-SECONDS=0
-until [[ -n "${csvName}" ]]; do
-    csvName="$(oc -n "${odfInstallNamespace}" \
-        get "subscriptions.operators.coreos.com/${subscriptionName}" \
-        -o jsonpath='{.status.installedCSV}' || true)"
-    if [[ -z "${csvName}" ]]; then
-        if (( SECONDS >= wMax )); then
-            oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml || true
-            oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml || true
-            oc -n "${odfInstallNamespace}" get csv -o wide || true
-            exit 1
+(
+    # Phase 1: poll until OLM populates installedCSV — oc wait requires a known exact value so
+    # a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
+    # Subshell isolates SECONDS=0 so the parent shell's elapsed-time counter is not reset.
+    typeset csvName=''
+    typeset -i wInt=10 wMax=300
+    SECONDS=0
+    until [[ -n "${csvName}" ]]; do
+        csvName="$(oc -n "${odfInstallNamespace}" \
+            get "subscriptions.operators.coreos.com/${subscriptionName}" \
+            -o jsonpath='{.status.installedCSV}' || true)"
+        if [[ -z "${csvName}" ]]; then
+            if (( SECONDS >= wMax )); then
+                oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml || true
+                oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml || true
+                oc -n "${odfInstallNamespace}" get csv -o wide || true
+                exit 1
+            fi
+            : "Waiting for subscription installedCSV (${SECONDS}/${wMax}s)"
+            sleep "${wInt}"
         fi
-        : "Waiting for subscription installedCSV (${SECONDS}/${wMax}s)"
-        sleep "${wInt}"
-    fi
-done
-: "OLM registered CSV: ${csvName}"
+    done
+    : "OLM registered CSV: ${csvName}"
 
-# Phase 2: CSV name is now known; oc wait with the exact value is safe.
-if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
-        --for=jsonpath='{.status.phase}'=Succeeded \
-        --timeout=15m; then
-    oc -n "${odfInstallNamespace}" get csv -o wide || true
-    exit 1
-fi
-: "OLM installed CSV: ${csvName}"
+    # Phase 2: CSV name is now known; oc wait with the exact value is safe.
+    if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
+            --for=jsonpath='{.status.phase}'=Succeeded \
+            --timeout=15m; then
+        oc -n "${odfInstallNamespace}" get csv -o wide || true
+        exit 1
+    fi
+    : "OLM installed CSV: ${csvName}"
+    true
+)
 
 # Phase 3: odf-operator is a meta-operator — its CSV Succeeded only means the odf-operator
 # pod is running. Sub-operators (ocs-operator, noobaa-operator, rook-ceph-operator) are
