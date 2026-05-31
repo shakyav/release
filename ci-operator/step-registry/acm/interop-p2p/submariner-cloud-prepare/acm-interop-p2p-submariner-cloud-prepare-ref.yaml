@@ -11,17 +11,17 @@ ref:
       memory: 250Mi
   timeout: 30m0s
   grace_period: 10m0s
+  env:
+    - name: ACM_SPOKE_CLUSTER_COUNT
+      default: "2"
+      documentation: |-
+        Number of ACM spoke clusters to prepare for Submariner.
   documentation: |-
     Step 1 of 3 in the Submariner installation chain.
 
-    Downloads subctl and yq to SHARED_DIR for reuse by later steps,
-    prepares AWS security groups on each spoke cluster using
-    'subctl cloud prepare aws', and pre-labels one worker node per
-    spoke as the Submariner gateway node.
-
-    Outputs written to SHARED_DIR:
-      subctl  - subctl binary (chmod +x)
-      yq      - yq binary     (chmod +x)
+    Installs subctl locally (not SHARED_DIR), prepares AWS security groups on
+    each spoke cluster using 'subctl cloud prepare aws' with dedicated gateway
+    nodes (default --gateways 1), and opens required IPsec/NAT-T firewall ports.
 
     AWS credentials are loaded from CLUSTER_PROFILE_DIR into ~/.aws/
     and removed from disk via a trap on EXIT. They are never written

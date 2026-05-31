@@ -3,10 +3,10 @@
 # Step 2 of 3: Submariner Broker Deploy and Cluster Join
 #
 # Responsibilities:
-#   - Download subctl to /tmp/bin/ (step-local; NOT in SHARED_DIR)
+#   - Install subctl to /tmp/bin/ (step-local; NOT in SHARED_DIR)
 #   - Deploy the Submariner broker on the hub cluster
 #   - Join each spoke cluster to the broker (subctl join)
-#   - broker-info.subm is kept in /tmp and removed after all joins via trap
+#   - broker-info.subm is kept in /tmp and removed on EXIT via trap
 #   - Wait (in order) for: submariner-operator, gateway, routeagent, globalnet,
 #     lighthouse-agent, and lighthouse-coredns to be fully ready on each spoke
 #   - Wait for OpenShift CoreDNS to include Lighthouse DNS forwarding
@@ -19,313 +19,221 @@
 
 set -euxo pipefail; shopt -s inherit_errexit
 
-#=====================
-# Constants
-#=====================
-# subctlBin is step-local (/tmp/bin); installed by InstallSubctl below.
+# ── Constants ─────────────────────────────────────────────────────────────────
 typeset -r subctlBin="/tmp/bin/subctl"
-typeset -r spokeCount="${ACM_SPOKE_CLUSTER_COUNT:-2}"
 typeset -r brokerInfoFile="/tmp/broker-info.subm"
+typeset -i spokeCount="${ACM_SPOKE_CLUSTER_COUNT}"
 
-#=====================
-# CleanupBrokerInfo — remove broker credentials file on EXIT
-#=====================
-CleanupBrokerInfo() {
+typeset -a spokeKubeconfigsArr=()
+typeset -a spokeNamesArr=()
+
+# ── Cleanup — remove broker credentials on EXIT ───────────────────────────────
+Cleanup() {
+    [[ $- == *x* ]] && _wasTracing=true || _wasTracing=false
+    set +x
     rm -f "${brokerInfoFile}"
+    [[ "${_wasTracing}" == "true" ]] && set -x
 }
-trap CleanupBrokerInfo EXIT
+trap Cleanup EXIT
 
-#=====================
-# Need — assert a command exists
-#=====================
-Need() {
-    command -v "$1" 1>/dev/null || {
-        echo "[FATAL] '$1' not found in PATH" >&2
-        exit 1
-    }
-}
-
-#=====================
-# InstallSubctl — install subctl via the official installer into /tmp/bin/
-#=====================
+# ── InstallSubctl — install subctl to /tmp/bin/ ───────────────────────────────
 InstallSubctl() {
     mkdir -p /tmp/bin
     if [[ -x "${subctlBin}" ]]; then
-        echo "[INFO] subctl already present at ${subctlBin}, skipping download" >&2
-        return
+        return 0
     fi
-    echo "[INFO] Installing subctl via https://get.submariner.io" >&2
     curl -Ls https://get.submariner.io | bash
     cp "${HOME}/.local/bin/subctl" "${subctlBin}"
     chmod +x "${subctlBin}"
-    echo "[INFO] subctl installed: $(${subctlBin} version 2>&1 | head -1)" >&2
+    true
 }
 
-#=====================
-# LoadSpokeConfig — populate spokeKubeconfigs, spokeNames
-#=====================
-typeset -a spokeKubeconfigs=()
-typeset -a spokeNames=()
-
+# ── LoadSpokeConfig — populate spoke arrays from SHARED_DIR ───────────────────
 LoadSpokeConfig() {
     typeset -i i
     for ((i = 1; i <= spokeCount; i++)); do
         typeset kcFile="${SHARED_DIR}/managed-cluster-kubeconfig-${i}"
         typeset nameFile="${SHARED_DIR}/managed-cluster-name-${i}"
 
-        if [[ ! -f "${kcFile}" ]]; then
-            echo "[FATAL] Spoke ${i} kubeconfig not found: ${kcFile}" >&2
-            exit 1
-        fi
-        if [[ ! -f "${nameFile}" ]]; then
-            echo "[FATAL] Spoke ${i} name file not found: ${nameFile}" >&2
-            exit 1
-        fi
+        [ -f "${kcFile}" ]
+        [ -f "${nameFile}" ]
 
-        spokeKubeconfigs+=("${kcFile}")
-        spokeNames+=("$(cat "${nameFile}")")
-        echo "[INFO] Spoke ${i}: name=${spokeNames[-1]}, kubeconfig=${kcFile}" >&2
+        spokeKubeconfigsArr+=("${kcFile}")
+        spokeNamesArr+=("$(cat "${nameFile}")")
     done
+    true
 }
 
-#=====================
-# DeployBroker — deploy Submariner broker on hub
-#=====================
+# ── SanitizeClusterId — convert any string to a valid RFC 1123 DNS label ──────
+SanitizeClusterId() {
+    typeset raw="${1:?}"; (($#)) && shift
+    typeset id
+
+    id="${raw,,}"
+    id="${id//[^a-z0-9-]/-}"
+    while [[ "${id}" == *--* ]]; do id="${id//--/-}"; done
+    id="${id##-}"
+    id="${id:0:63}"
+    id="${id%%-}"
+
+    [[ -n "${id}" ]] || { : "Cannot derive DNS label from '${raw}'"; false; }
+    echo "${id}"
+    true
+}
+
+# ── DeployBroker — deploy Submariner broker on the hub cluster ────────────────
 DeployBroker() {
-    echo "[INFO] Deploying Submariner broker on hub cluster" >&2
-    # subctl deploy-broker writes broker-info.subm to the CURRENT WORKING DIRECTORY.
-    # There is no --broker-info-file flag in subctl v0.23.1 (the flag was removed;
-    # using it causes "unknown flag: --broker-info-file" and immediate exit 1).
-    # Run inside a subshell that changes to /tmp so the output file lands at
-    # /tmp/broker-info.subm, which is where brokerInfoFile points.
     (
         cd /tmp
         "${subctlBin}" deploy-broker \
             --kubeconfig "${KUBECONFIG}" \
             --globalnet
     )
-    [[ -f "${brokerInfoFile}" ]]
-    echo "[INFO] Broker deployed, broker-info written to ${brokerInfoFile}" >&2
+    [ -f "${brokerInfoFile}" ]
+    true
 }
 
-#=====================
-# JoinCluster — join one spoke to the broker
-#=====================
-# NAT-T is intentionally left enabled (default).
-# Spoke clusters are deployed in separate AWS regions (cross-VPC), so gateway
-# nodes reside in private subnets with no public IPs.  Cross-region IPsec
-# tunnels must traverse the public internet via NAT, which requires NAT
-# traversal to discover the correct external endpoint.  Disabling NAT-T
-# (--natt=false) would cause the tunnel handshake to fail silently for any
-# cross-region spoke pair.
+# ── JoinCluster — join one spoke to the broker ────────────────────────────────
 JoinCluster() {
-    typeset kubeconfig="$1"
-    typeset spokeName="$2"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset spokeName="${1:?}"; (($#)) && shift
 
-    echo "[INFO] Joining spoke '${spokeName}' to broker" >&2
+    typeset clusterId
+    clusterId="$(SanitizeClusterId "${spokeName}")"
+
     "${subctlBin}" join \
         --kubeconfig "${kubeconfig}" \
-        --clusterid "${spokeName}" \
+        --clusterid "${clusterId}" \
         "${brokerInfoFile}"
-    echo "[INFO] Join initiated for spoke '${spokeName}'" >&2
+
+    true
 }
 
-#=====================
-# WaitSubmarinerOperatorReady — wait for the Submariner operator Deployment
-#=====================
-# 'subctl join' installs the operator CSV but returns before the operator pod is Available.
-# All other Submariner DaemonSets and Deployments are created by the operator, so they
-# cannot exist until the operator is Running.  Checking DaemonSets before this point
-# causes 'oc rollout status' to fail immediately with "not found".
-WaitSubmarinerOperatorReady() {
-    typeset kubeconfig="$1"
-    typeset spokeName="$2"
-
-    echo "[INFO] Waiting for submariner-operator Deployment on spoke '${spokeName}'" >&2
-    if ! KUBECONFIG="${kubeconfig}" oc wait deployment/submariner-operator \
-            -n submariner-operator \
-            --for=condition='Available' \
-            --timeout=10m; then
-        echo "[ERROR] submariner-operator Deployment not Available on spoke '${spokeName}'" >&2
-        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator >&2 || echo "[DEBUG] oc get all failed for submariner-operator" >&2
-        exit 1
-    fi
-    echo "[INFO] submariner-operator ready on spoke '${spokeName}'" >&2
-}
-
-#=====================
-# WaitForObjectToExist — portable poll until a Kubernetes resource exists
-#=====================
-# oc wait --for=create is NOT supported by all oc binary versions present in CI
-# containers (it returns "unrecognized condition: create" on some builds even
-# though the resource already exists).  This helper replaces every --for=create
-# usage with a simple oc get poll that works on any oc version.
-#
-# Arguments:
-#   $1 kubeconfig  - path to KUBECONFIG
-#   $2 resource    - resource type/name (e.g. daemonset/submariner-gateway)
-#   $3 namespace   - Kubernetes namespace
-#   $4 timeoutSecs - how long to wait before giving up (default: 300)
-#   $5 spokeName   - human-readable label for error messages
+# ── WaitForObjectToExist — poll until a Kubernetes resource exists ────────────
 WaitForObjectToExist() {
-    typeset kubeconfig="$1"
-    typeset resource="$2"
-    typeset namespace="$3"
-    typeset -i timeoutSecs="${4:-300}"
-    typeset spokeName="${5:-unknown}"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset resource="${1:?}"; (($#)) && shift
+    typeset namespace="${1:?}"; (($#)) && shift
+    typeset -i timeoutSecs="${1:-300}"; (($#)) && shift
+    typeset spokeName="${1:-unknown}"; (($#)) && shift
 
-    typeset -i waited=0
-    typeset -i interval=10
-    until KUBECONFIG="${kubeconfig}" oc get "${resource}" -n "${namespace}" 2>/dev/null; do
-        if (( waited >= timeoutSecs )); then
-            echo "[ERROR] ${resource} not found in namespace '${namespace}' after ${timeoutSecs}s on spoke '${spokeName}'" >&2
-            KUBECONFIG="${kubeconfig}" oc get all -n "${namespace}" >&2
-            exit 1
-        fi
-        : "Waiting for ${resource} to exist on spoke '${spokeName}' (${waited}/${timeoutSecs}s)"
-        sleep "${interval}"
-        (( waited += interval ))
-    done
+    (
+        typeset -i wInt=10
+        SECONDS=0
+        until KUBECONFIG="${kubeconfig}" oc get "${resource}" -n "${namespace}" 1>/dev/null; do
+            if (( SECONDS >= timeoutSecs )); then
+                : "${resource} not found in '${namespace}' after ${timeoutSecs}s on '${spokeName}'"
+                KUBECONFIG="${kubeconfig}" oc get all -n "${namespace}" || true
+                exit 1
+            fi
+            : "Waiting for ${resource} on '${spokeName}' (${SECONDS}/${timeoutSecs}s)"
+            sleep "${wInt}"
+        done
+        true
+    )
+    true
 }
 
-#=====================
-# WaitSubmarinerReady — wait for submariner-gateway DaemonSet on one spoke
-#=====================
-# Two-phase: poll until the operator creates the DaemonSet object, then
-# oc rollout status waits for all pods to be scheduled and Running.
+# ── WaitSubmarinerReady — full component readiness sequence for one spoke ─────
 WaitSubmarinerReady() {
-    typeset kubeconfig="$1"
-    typeset spokeName="$2"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset spokeName="${1:?}"; (($#)) && shift
 
-    echo "[INFO] Waiting for submariner-gateway DaemonSet to appear on spoke '${spokeName}'" >&2
+    KUBECONFIG="${kubeconfig}" oc wait deployment/submariner-operator \
+        -n submariner-operator \
+        --for=condition=Available \
+        --timeout=10m 1>/dev/null || {
+        : "submariner-operator not Available on '${spokeName}'"
+        KUBECONFIG="${kubeconfig}" oc get all -n submariner-operator || true
+        false
+    }
+
     WaitForObjectToExist "${kubeconfig}" daemonset/submariner-gateway submariner-operator 300 "${spokeName}"
-
-    echo "[INFO] Waiting for submariner-gateway DaemonSet rollout on spoke '${spokeName}'" >&2
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-gateway \
-        -n submariner-operator \
-        --timeout=10m
-    echo "[INFO] submariner-gateway ready on spoke '${spokeName}'" >&2
-}
+        -n submariner-operator --timeout=10m 1>/dev/null
 
-#=====================
-# WaitAllSubmarinerComponentsReady — wait for routeagent, globalnet, lighthouse-agent, lighthouse-coredns
-#=====================
-# submariner-routeagent is the most critical missing wait: it runs on EVERY node
-# (not just the gateway) and installs the kernel routes that direct cross-cluster
-# traffic into the IPsec tunnel.  Without routeagent being Ready, pod-to-pod
-# cross-cluster traffic fails even when the gateway tunnel is established.
-WaitAllSubmarinerComponentsReady() {
-    typeset kubeconfig="$1"
-    typeset spokeName="$2"
-
-    echo "[INFO] Waiting for submariner-routeagent on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" daemonset/submariner-routeagent submariner-operator 300 "${spokeName}"
-    # routeagent runs on every node (6 on c5n.metal spokes).  Bare-metal image pulls
-    # and OVN kernel initialisation can push past 10 minutes; 20m gives enough headroom.
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-routeagent \
-        -n submariner-operator \
-        --timeout=20m
+        -n submariner-operator --timeout=20m 1>/dev/null
 
-    echo "[INFO] Waiting for submariner-globalnet on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" daemonset/submariner-globalnet submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/submariner-globalnet \
-        -n submariner-operator \
-        --timeout=10m
+        -n submariner-operator --timeout=10m 1>/dev/null
 
-    echo "[INFO] Waiting for submariner-lighthouse-agent on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" deployment/submariner-lighthouse-agent submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-agent \
-        -n submariner-operator \
-        --timeout=10m
+        -n submariner-operator --timeout=10m 1>/dev/null
 
-    echo "[INFO] Waiting for submariner-lighthouse-coredns on spoke '${spokeName}'" >&2
     WaitForObjectToExist "${kubeconfig}" deployment/submariner-lighthouse-coredns submariner-operator 300 "${spokeName}"
     KUBECONFIG="${kubeconfig}" oc rollout status deployment/submariner-lighthouse-coredns \
-        -n submariner-operator \
-        --timeout=10m
+        -n submariner-operator --timeout=10m 1>/dev/null
 
-    echo "[INFO] All Submariner components ready on spoke '${spokeName}'" >&2
+    true
 }
 
-#=====================
-# WaitForDnsForwardingConfigured — wait for Lighthouse DNS stub zone in OpenShift CoreDNS
-#=====================
+# ── WaitForDnsForwardingConfigured — wait for .clusterset.local stub zone ─────
 WaitForDnsForwardingConfigured() {
-    typeset kubeconfig="$1"
-    typeset spokeName="$2"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset spokeName="${1:?}"; (($#)) && shift
 
-    echo "[INFO] Waiting for Lighthouse DNS forwarding in OpenShift CoreDNS on spoke '${spokeName}'" >&2
-    typeset -i dnsWait=0
-    typeset -i dnsMax=300
-
-    while (( dnsWait < dnsMax )); do
-        if KUBECONFIG="${kubeconfig}" oc get configmap dns-default \
-                -n openshift-dns \
-                -o jsonpath='{.data.Corefile}' \
-                | grep -q 'clusterset.local'; then
-            echo "[INFO] Lighthouse DNS stub zone found in dns-default on spoke '${spokeName}' after ${dnsWait}s" >&2
-            break
-        fi
-        : "clusterset.local not yet in CoreDNS config on '${spokeName}' (${dnsWait}/${dnsMax}s)"
-        sleep 15
-        (( dnsWait += 15 ))
-    done
-
-    if (( dnsWait >= dnsMax )); then
-        echo "[ERROR] Lighthouse DNS forwarding not configured on spoke '${spokeName}' after ${dnsMax}s" >&2
-        echo "[DEBUG] Current dns-default Corefile on '${spokeName}':" >&2
-        KUBECONFIG="${kubeconfig}" oc get configmap dns-default \
-            -n openshift-dns \
-            -o jsonpath='{.data.Corefile}' 2>&1 || echo "[DEBUG] Could not retrieve dns-default Corefile" >&2
-        exit 1
+    typeset cmName cmNamespace
+    if KUBECONFIG="${kubeconfig}" oc get configmap dns-default \
+            -n openshift-dns 1>/dev/null; then
+        cmName="dns-default"
+        cmNamespace="openshift-dns"
+    else
+        cmName="coredns"
+        cmNamespace="kube-system"
     fi
 
-    # Wait for the dns DaemonSet to roll out with the new config
-    echo "[INFO] Rolling out updated dns DaemonSet on spoke '${spokeName}'" >&2
+    (
+        typeset -i timeout=300 interval=15
+        SECONDS=0
+        until KUBECONFIG="${kubeconfig}" oc get configmap "${cmName}" -n "${cmNamespace}" \
+                -o jsonpath='{.data.Corefile}' 2>/dev/null | grep -q 'clusterset.local'; do
+            if (( SECONDS >= timeout )); then
+                : "CoreDNS '${cmName}' not patched with clusterset.local on '${spokeName}' after ${timeout}s"
+                KUBECONFIG="${kubeconfig}" oc get configmap "${cmName}" -n "${cmNamespace}" -o yaml || true
+                exit 1
+            fi
+            : "Waiting for clusterset.local in CoreDNS on '${spokeName}' (${SECONDS}/${timeout}s)"
+            sleep "${interval}"
+        done
+        true
+    )
+
+    sleep 35
+
     KUBECONFIG="${kubeconfig}" oc rollout status daemonset/dns-default \
-        -n openshift-dns \
-        --timeout=10m
-    echo "[INFO] CoreDNS DNS forwarding rollout complete on spoke '${spokeName}'" >&2
+        -n openshift-dns --timeout=5m 1>/dev/null 2>/dev/null || \
+    KUBECONFIG="${kubeconfig}" oc rollout status daemonset/coredns \
+        -n kube-system --timeout=5m 1>/dev/null 2>/dev/null || true
+
+    true
 }
 
-#=====================
-# Main
-#=====================
-Need oc
-Need jq
-Need curl
+# ── Main ──────────────────────────────────────────────────────────────────────
+command -v oc 1>/dev/null
+command -v curl 1>/dev/null
+eval "$(
+    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+)"; EnsureReqs jq
 
 LoadSpokeConfig
 InstallSubctl
 DeployBroker
 
-# Join all spokes first, then wait — parallelises the operator installation across clusters.
-# broker-info.subm is removed by the EXIT trap when the script exits (not here).
 typeset -i i
 for ((i = 0; i < spokeCount; i++)); do
-    JoinCluster "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
-done
-
-# Phase 1: operator ready — must precede DaemonSet checks (see WaitSubmarinerOperatorReady).
-for ((i = 0; i < spokeCount; i++)); do
-    WaitSubmarinerOperatorReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
-done
-
-# Phase 2: gateway DaemonSet created and rolled out.
-for ((i = 0; i < spokeCount; i++)); do
-    WaitSubmarinerReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
-done
-
-# Phase 3: routeagent, globalnet, lighthouse-agent, lighthouse-coredns.
-for ((i = 0; i < spokeCount; i++)); do
-    WaitAllSubmarinerComponentsReady "${spokeKubeconfigs[i]}" "${spokeNames[i]}"
+    JoinCluster "${spokeKubeconfigsArr[i]}" "${spokeNamesArr[i]}"
 done
 
 for ((i = 0; i < spokeCount; i++)); do
-    WaitForDnsForwardingConfigured \
-        "${spokeKubeconfigs[i]}" \
-        "${spokeNames[i]}"
+    WaitSubmarinerReady "${spokeKubeconfigsArr[i]}" "${spokeNamesArr[i]}"
 done
 
-echo "[INFO] Submariner broker deploy, join, and readiness checks complete" >&2
+for ((i = 0; i < spokeCount; i++)); do
+    WaitForDnsForwardingConfigured "${spokeKubeconfigsArr[i]}" "${spokeNamesArr[i]}"
+done
+
 true
