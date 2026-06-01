@@ -90,7 +90,6 @@ tests:
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
       BASE_DOMAIN: cspilp.interop.ccitredhat.com
       CLOUD_PROVIDER: ipi-aws
-      CNV_TESTS_UPGRADE_ONLY: "true"
       COMPUTE_NODE_TYPE: m6a.2xlarge
       CONTROL_PLANE_INSTANCE_TYPE: m6a.2xlarge
       FIREWATCH_CONFIG: |

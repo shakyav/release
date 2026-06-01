@@ -2,7 +2,7 @@ ref:
   as: interop-tests-openshift-virtualization-upgrade-tests
   documentation: |-
     Experimental CNV OCP upgrade tests with strengthened ODF CSI/snapshot prep (debug).
-    Spoke OCP upgrade is driven by pytest (--upgrade=ocp), not acm-interop-p2p-cluster-upgrade.
+    Split mode: pre-upgrade pytest, spoke OCP upgrade via ACM ManifestWork (default), post-upgrade pytest.
     Use instead of interop-tests-openshift-virtualization-tests while validating CSI fixes.
     Not for production gating until promoted.
   from: openshift-virtualization-tests-sshpass
@@ -60,14 +60,37 @@ ref:
   - name: CNV_UPGRADE_PYTEST_SPLIT
     default: "true"
     documentation: |-
-      When true and CNV_TESTS_UPGRADE_ONLY=true, run pytest in order: pre-upgrade (virt +
-      storage), CSI flush, product_upgrade (spoke OCP upgrade via test suite), wait for
-      ClusterVersion Completed, CSI flush again.
+      When true and CNV_TESTS_UPGRADE_ONLY=true, run three phases: pre-upgrade pytest
+      (-k before_upgrade), spoke OCP upgrade (ACM ManifestWork if CNV_SPOKE_UPGRADE_VIA_ACM=true),
+      post-upgrade pytest (-k after_upgrade) after test_ocp_upgrade_process dependency gate.
+  - name: CNV_SPOKE_UPGRADE_VIA_ACM
+    default: "true"
+    documentation: |-
+      When true with CNV_UPGRADE_PYTEST_SPLIT=true, upgrade spoke OCP via ACM ManifestWork on the hub
+      (not pytest product_upgrade). Set false to use pytest tests/install_upgrade_operators/product_upgrade.
+  - name: CNV_ACM_MANIFESTWORK_NAME
+    default: "spoke-ocp-upgrade"
+    documentation: ManifestWork name for spoke ClusterVersion desiredUpdate.
+  - name: CNV_ACM_MANIFESTWORK_NAMESPACE
+    default: ""
+    documentation: |-
+      Managed cluster namespace on hub for ManifestWork (defaults to ${SHARED_DIR}/managed-cluster-name).
+  - name: CNV_ACM_HUB_KUBECONFIG
+    default: ""
+    documentation: |-
+      Hub kubeconfig for ManifestWork apply (defaults to ${SHARED_DIR}/kubeconfig from acm-fetch-managed-clusters).
+  - name: CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST
+    default: "false"
+    documentation: |-
+      When true, skip phase-3a test_ocp_upgrade_process (post-upgrade tests may be skipped by pytest-dependency).
   - name: CNV_SPOKE_UPGRADE_WAIT_TIMEOUT
     default: "3h"
     documentation: |-
-      Max time to wait for spoke ClusterVersion to complete after product_upgrade pytest
-      (only when CNV_UPGRADE_PYTEST_SPLIT=true).
+      Max time to wait for spoke ClusterVersion Completed after ACM ManifestWork or product_upgrade.
+  - name: TARGET_CHANNEL
+    default: ""
+    documentation: |-
+      When set, patch spoke ClusterVersion channel before ACM ManifestWork upgrade (e.g. stable-4.22).
   - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
     default: "600"
     documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to finish deleting after reimport.
