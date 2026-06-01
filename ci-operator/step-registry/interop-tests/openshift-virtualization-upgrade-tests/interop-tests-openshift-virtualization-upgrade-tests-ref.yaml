@@ -1,0 +1,87 @@
+ref:
+  as: interop-tests-openshift-virtualization-upgrade-tests
+  documentation: |-
+    Experimental CNV OCP upgrade tests with strengthened ODF CSI/snapshot prep (debug).
+    Spoke OCP upgrade is driven by pytest (--upgrade=ocp), not acm-interop-p2p-cluster-upgrade.
+    Use instead of interop-tests-openshift-virtualization-tests while validating CSI fixes.
+    Not for production gating until promoted.
+  from: openshift-virtualization-tests-sshpass
+  commands: interop-tests-openshift-virtualization-upgrade-tests-commands.sh
+  timeout: 4h0m0s
+  grace_period: 2h
+  cli: latest
+  credentials:
+    - name: cluster-secrets-aws-interop-qe
+      namespace: test-credentials
+      mount_path: /secrets
+    - name: cnv-ci-brew-pull-secret
+      namespace: test-credentials
+      mount_path: /var/run/cnv-ci-brew-pull-secret
+    - name: openshift-virtualization-tests-credentials
+      namespace: test-credentials
+      mount_path: /bw
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+  dependencies:
+    - name: "release:target"
+      env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
+  env:
+  - name: BW_PATH
+    default: "/bw"
+    documentation: Bitwarden folder
+  - name: OCP_VERSION
+    default: "4.13"
+    documentation: OpenShift Version
+  - default: '|7820aea2-0d75-11e7-9259-28d244ea5a6d.hhav.f63e13'
+    name: BREW_IMAGE_REGISTRY_USERNAME
+    documentation: Brew image registry username for authenticated image pulls.
+  - default: /var/run/cnv-ci-brew-pull-secret/token
+    name: BREW_IMAGE_REGISTRY_TOKEN_PATH
+    documentation: Path to the file containing the Brew image registry authentication token.
+  - default: v0.59.0-alpha.0
+    name: KUBEVIRT_RELEASE
+    documentation: KubeVirt release version tag used for version-specific image resolution.
+  - default: /tmp/artifacts
+    name: ARTIFACTS_DIR
+    documentation: Directory path for storing test artifacts.
+  - default: openshift-cnv
+    name: TARGET_NAMESPACE
+    documentation: Namespace where the CNV / HCO operator is installed.
+  - name: MAP_TESTS
+    default: "false"
+    documentation: Specify whether to update the test suite name for reporting tools
+  - name: CNV_TESTS_UPGRADE_ONLY
+    default: "true"
+    documentation: |-
+      When true, require managed-cluster-kubeconfig and run OCP upgrade tests only.
+      This debug step is intended for upgrade workflows (CNV_TESTS_UPGRADE_ONLY=true).
+  - name: CNV_UPGRADE_PYTEST_SPLIT
+    default: "true"
+    documentation: |-
+      When true and CNV_TESTS_UPGRADE_ONLY=true, run pytest in order: pre-upgrade (virt +
+      storage), CSI flush, product_upgrade (spoke OCP upgrade via test suite), wait for
+      ClusterVersion Completed, CSI flush again.
+  - name: CNV_SPOKE_UPGRADE_WAIT_TIMEOUT
+    default: "3h"
+    documentation: |-
+      Max time to wait for spoke ClusterVersion to complete after product_upgrade pytest
+      (only when CNV_UPGRADE_PYTEST_SPLIT=true).
+  - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
+    default: "600"
+    documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to finish deleting after reimport.
+  - name: CNV_VOLUME_SNAPSHOT_DELETE_TIMEOUT
+    default: "120"
+    documentation: Per-attempt timeout for oc delete volumesnapshots during reimport.
+  - name: CNV_TARGET_STORAGE_CLASS
+    default: "ocs-storagecluster-ceph-rbd-virtualization"
+    documentation: |-
+      StorageClass for CNV boot images and tests. When cluster default and boot-image PVCs
+      already use this SC (e.g. after interop-tests-deploy-odf sets virt default), reimport
+      is skipped unless CNV_FORCE_REIMPORT_DATAVOLUMES=true.
+  - name: CNV_FORCE_REIMPORT_DATAVOLUMES
+    default: "false"
+    documentation: |-
+      When true, always run full boot-image tear-down/reimport. When false, reimport only if
+      default SC mismatch, stuck PVCs, or PVCs on another StorageClass.

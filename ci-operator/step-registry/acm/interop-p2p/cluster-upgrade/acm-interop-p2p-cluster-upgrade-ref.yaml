@@ -11,7 +11,7 @@ ref:
       cpu: '1'
       memory: 500Mi
   dependencies:
-  - name: "release:latest"
+  - name: "release:target"
     env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
   env:
   - name: TARGET_CHANNEL
