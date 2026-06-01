@@ -31,6 +31,10 @@ base_images:
     name: openshift-virtualization-tests
     namespace: ci
     tag: latest
+  verification-tests:
+    name: verification-tests
+    namespace: ci
+    tag: latest
 build_root:
   image_stream_tag:
     name: release
@@ -63,6 +67,11 @@ releases:
       product: ocp
       stream: nightly
       version: "4.22"
+  target:
+    candidate:
+      product: ocp
+      stream: nightly
+      version: "4.22"
 resources:
   '*':
     requests:
@@ -75,7 +84,7 @@ tests:
     cluster_profile: aws-cspi-qe
     dependencies:
       OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
-      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:latest
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:target
     env:
       ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.21"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
@@ -151,8 +160,10 @@ tests:
     - ref: acm-fetch-managed-clusters
     - ref: interop-tests-deploy-odf
     - ref: p2p-acm-cnv-install-policy
+    - ref: cucushift-upgrade-prehealthcheck
     - ref: acm-interop-p2p-cluster-upgrade
-    - ref: interop-tests-openshift-virtualization-tests
+    - ref: cucushift-upgrade-healthcheck
+    - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc
     - ref: acm-tests-alc

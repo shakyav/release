@@ -27,13 +27,15 @@ typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
 
 [ -f "${odfQuayCredentialsFile}" ]
 
-# Merge cluster pull secret with ODF Quay credentials; set +x in the subshell suppresses
-# the decoded pull-secret JSON from CI logs.
+# Merge cluster pull secret with ODF Quay credentials; set +x only while decoding pull-secret.
 oc -n openshift-config set data secret/pull-secret \
     --from-file .dockerconfigjson=<(
-        jq '. * input' <(set +x
+        jq '. * input' <(
+            [[ $- == *x* ]] && _wasTracing=true || _wasTracing=false
+            set +x
             oc -n openshift-config get secret/pull-secret \
                 --template='{{index .data ".dockerconfigjson" | base64decode}}'
+            [[ "${_wasTracing}" == "true" ]] && set -x
         ) "${odfQuayCredentialsFile}"
     )
 
