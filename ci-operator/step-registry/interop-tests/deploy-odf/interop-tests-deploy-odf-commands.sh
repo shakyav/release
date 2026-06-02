@@ -249,16 +249,27 @@ if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
 fi
 
 # Default SC: legacy jobs use ceph-rbd; CNV+ODF jobs set ODF_DEFAULT_STORAGE_CLASS to
-# ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO boot-image imports land on
-# the virt SC before p2p-acm-cnv-install-policy (avoids tear-down/reimport in CNV tests).
-typeset defaultSc="${ODF_DEFAULT_STORAGE_CLASS}"
-[[ -n "${defaultSc}" ]] || defaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
+# ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization for HCO boot-image imports.
+typeset requestedDefaultSc="${ODF_DEFAULT_STORAGE_CLASS}"
+[[ -n "${requestedDefaultSc}" ]] || requestedDefaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
 
-# OCS creates the virt SC after StorageCluster Available; annotating immediately fails with NotFound.
-if [[ "${defaultSc}" == *-ceph-rbd-virtualization ]]; then
+typeset defaultSc="${requestedDefaultSc}"
+typeset virtSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization"
+
+# ODF 4.21+ (provider/client model): ocs-operator adds the virt SC to StorageConsumer only
+# when the virtualmachines.kubevirt.io CRD exists (CNV operator). deploy-odf runs before
+# p2p-acm-cnv-install-policy, so defer virt SC wait/default to that step when CRD is absent.
+if [[ "${requestedDefaultSc}" == "${virtSc}" ]] && ! oc get crd/virtualmachines.kubevirt.io &>/dev/null; then
+    : "KubeVirt CRD absent; deferring ${virtSc} default setup to CNV policy step"
+    defaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
+fi
+
+if [[ "${defaultSc}" == "${virtSc}" ]]; then
     if ! oc wait "storageclass/${defaultSc}" --for=create \
             --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
         oc get sc || true
+        oc get crd/virtualmachines.kubevirt.io -o yaml \
+            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>/dev/null || true
         oc get "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
             -n "${odfInstallNamespace}" -o yaml \
             > "${ARTIFACT_DIR}/storagecluster.yaml" || true
@@ -271,7 +282,7 @@ oc get sc -o name | xargs -rI{} oc annotate {} \
     storageclass.kubevirt.io/is-default-virt-class- --overwrite
 oc annotate storageclass "${defaultSc}" \
     storageclass.kubernetes.io/is-default-class=true --overwrite
-if [[ "${defaultSc}" == *-ceph-rbd-virtualization ]]; then
+if [[ "${defaultSc}" == "${virtSc}" ]]; then
     oc annotate storageclass "${defaultSc}" \
         storageclass.kubevirt.io/is-default-virt-class=true --overwrite
 fi

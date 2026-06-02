@@ -46,13 +46,14 @@ ref:
   - name: ODF_DEFAULT_STORAGE_CLASS
     documentation: |-
       Cluster default StorageClass after ODF is Available. Empty = ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd.
-      For CNV interop set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO common boot
-      images import on the virt SC before CNV policy install (also sets kubevirt default when virt SC).
+      For CNV interop set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization. ODF 4.21+ creates
+      that SC only after the virtualmachines.kubevirt.io CRD exists; when absent here, ceph-rbd is
+      set as interim default and p2p-acm-cnv-install-policy completes virt SC setup after CNV operator.
     default: ""
   - name: ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT
     documentation: |-
-      When ODF_DEFAULT_STORAGE_CLASS is the virt SC, wait for that StorageClass to exist after
-      StorageCluster Available before setting default annotations. Accepts any oc wait duration.
+      When ODF_DEFAULT_STORAGE_CLASS is the virt SC and KubeVirt CRD is present, wait for that
+      StorageClass after StorageCluster Available before setting default annotations.
     default: "30m"
   - name: ODF_CATALOG_WAIT_TIMEOUT
     documentation: How long to wait for the ODF CatalogSource connectionState READY.

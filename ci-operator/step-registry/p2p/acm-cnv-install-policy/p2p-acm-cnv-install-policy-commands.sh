@@ -243,6 +243,50 @@ WaitForCNV() {
 typeset -a clusterNamesArr=()
 mapfile -t clusterNamesArr < <(LoadSpokeClusterNames)
 
+#=====================
+# ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
+#=====================
+# Called per-spoke (with spoke KUBECONFIG) before WaitForCNV to ensure the virt StorageClass
+# is ready and annotated as cluster/kubevirt default before HCO boot-image import completes.
+ConfigureOdfVirtStorageClassDefaults() {
+    typeset kubeconfig="${1:?}"
+    typeset -r virtSc="${ODF_DEFAULT_STORAGE_CLASS:-ocs-storagecluster-ceph-rbd-virtualization}"
+    [[ "${virtSc}" == *-ceph-rbd-virtualization ]] || return 0
+
+    oc --kubeconfig="${kubeconfig}" wait crd/virtualmachines.kubevirt.io --for=create \
+        --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"
+
+    if ! oc --kubeconfig="${kubeconfig}" wait "storageclass/${virtSc}" --for=create \
+            --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
+        oc --kubeconfig="${kubeconfig}" get sc || true
+        oc --kubeconfig="${kubeconfig}" get storageconsumer -n openshift-storage -o yaml \
+            > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>/dev/null || true
+        exit 1
+    fi
+
+    oc --kubeconfig="${kubeconfig}" get sc -o name | xargs -rI{} oc --kubeconfig="${kubeconfig}" annotate {} \
+        storageclass.kubernetes.io/is-default-class- \
+        storageclass.kubevirt.io/is-default-virt-class- --overwrite
+    oc --kubeconfig="${kubeconfig}" annotate storageclass "${virtSc}" \
+        storageclass.kubernetes.io/is-default-class=true \
+        storageclass.kubevirt.io/is-default-virt-class=true --overwrite
+
+    typeset -r snapClass='ocs-storagecluster-rbdplugin-snapclass'
+    if oc --kubeconfig="${kubeconfig}" get volumesnapshotclass "${snapClass}" &>/dev/null; then
+        oc --kubeconfig="${kubeconfig}" get volumesnapshotclass -o name \
+            | xargs -rI{} oc --kubeconfig="${kubeconfig}" annotate {} snapshot.storage.kubernetes.io/is-default-class- --overwrite
+        oc --kubeconfig="${kubeconfig}" annotate volumesnapshotclass "${snapClass}" \
+            snapshot.storage.kubernetes.io/is-default-class=true --overwrite
+        typeset -r snapCtrlNs='openshift-cluster-storage-operator'
+        typeset -r snapDeploy='csi-snapshot-controller'
+        if oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" get deployment "${snapDeploy}" &>/dev/null; then
+            oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" rollout restart "deployment/${snapDeploy}"
+            oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" rollout status "deployment/${snapDeploy}" --timeout=5m
+        fi
+    fi
+    true
+}
+
 typeset -a spokeKubeconfigsArr=()
 mapfile -t spokeKubeconfigsArr < <(LoadSpokeKubeconfigs "${clusterNamesArr[@]}")
 
@@ -520,6 +564,12 @@ typeset resultFile="" storedRc=""
 
 resultsDir="$(mktemp -d "${ARTIFACT_DIR}/cnv-policy-wait.XXXXXX")"
 trap 'rm -rf "${resultsDir}"' EXIT
+
+# Per-spoke: wait for KubeVirt CRD and ODF virt StorageClass before HyperConverged wait.
+# This is sequential because ODF annotations must settle before concurrent HCO boot-image imports.
+for ((idx = 0; idx < ${#clusterNamesArr[@]}; idx++)); do
+    ConfigureOdfVirtStorageClassDefaults "${spokeKubeconfigsArr[idx]}"
+done
 
 for ((idx = 0; idx < ${#clusterNamesArr[@]}; idx++)); do
     resultFile="${resultsDir}/cluster-$((idx + 1)).result"
