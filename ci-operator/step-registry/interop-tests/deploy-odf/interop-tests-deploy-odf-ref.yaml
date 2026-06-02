@@ -13,14 +13,18 @@ ref:
       name: odf-quay-credentials
       mount_path: /tmp/secrets/odf-quay-credentials
   documentation: |-
-    Deploy ODF
+    Deploy ODF/OCS on the hub cluster or on an ACM-managed spoke when ODF_DEPLOY_ON_SPOKE=true
+    (uses managed-cluster-kubeconfig from SHARED_DIR). Merges ODF Quay credentials into cluster
+    pull-secret, installs the odf-operator from a dev catalog, creates a StorageCluster, waits for
+    Available, optionally sets cluster/kubevirt default StorageClass (virt SC for CNV interop), and
+    runs ocs-must-gather on failure via EXIT trap (grace_period allows trap to finish).
   env:
   - name: ODF_VERSION_MAJOR_MINOR
     documentation: The ODF major.minor version
     default: "4.13"
   - name: ODF_OPERATOR_CHANNEL
     documentation: The odf operator channel
-    default: "stable-4.11"
+    default: "stable-4.13"
   - name: ODF_SUBSCRIPTION_NAME
     documentation: The ODF/OCS subscription name
     default: "odf-operator"
@@ -45,3 +49,32 @@ ref:
       For CNV interop set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO common boot
       images import on the virt SC before CNV policy install (also sets kubevirt default when virt SC).
     default: ""
+  - name: ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT
+    documentation: |-
+      When ODF_DEFAULT_STORAGE_CLASS is the virt SC, wait for that StorageClass to exist after
+      StorageCluster Available before setting default annotations. Accepts any oc wait duration.
+    default: "30m"
+  - name: ODF_CATALOG_WAIT_TIMEOUT
+    documentation: How long to wait for the ODF CatalogSource connectionState READY.
+    default: "10m"
+  - name: ODF_CSV_WAIT_TIMEOUT
+    documentation: How long to wait for the ODF CSV phase Succeeded after installedCSV is known.
+    default: "15m"
+  - name: ODF_CRD_CREATE_WAIT_TIMEOUT
+    documentation: How long to wait for storageclusters.ocs.openshift.io CRD to be created.
+    default: "10m"
+  - name: ODF_CRD_ESTABLISHED_WAIT_TIMEOUT
+    documentation: How long to wait for storageclusters.ocs.openshift.io CRD Established condition.
+    default: "5m"
+  - name: ODF_MCP_UPDATE_WAIT_TIMEOUT
+    documentation: How long to wait for MachineConfigPools Updated after ICSP apply.
+    default: "30m"
+  - name: ODF_RBD_CSI_WAIT_TIMEOUT
+    documentation: How long to wait for RBD CSI nodeplugin DaemonSet create and rollout.
+    default: "30m"
+  - name: ODF_OLM_INSTALLEDCSV_POLL_INTERVAL
+    documentation: Seconds between polls while waiting for subscription status.installedCSV.
+    default: "10"
+  - name: ODF_OLM_INSTALLEDCSV_POLL_TIMEOUT
+    documentation: Maximum seconds to poll for subscription status.installedCSV before failing.
+    default: "300"
