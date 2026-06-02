@@ -11,7 +11,7 @@ eval "$(
 trap '
     (($?)) &&
     timeout 8m oc adm must-gather \
-        --image="quay.io/rhceph-dev/ocs-must-gather:latest-stable-${ODF_VERSION_MAJOR_MINOR}" \
+        --image="quay.io/rhceph-dev/ocs-must-gather:latest-${ODF_VERSION_MAJOR_MINOR}" \
         --dest-dir="${ARTIFACT_DIR}/ocs_must_gather" || true
 ' EXIT
 
@@ -68,7 +68,7 @@ if [[ -e "icsp.yaml" ]]; then
     oc create -f icsp.yaml --dry-run=client -o yaml --save-config | oc apply -f -
     # MCPs already in Updated state satisfy the first condition immediately; || true is benign.
     oc wait mcp --all --for=condition=Updated=false --timeout=2m || true
-    oc wait mcp --all --for=condition=Updated --timeout=30m
+    oc wait mcp --all --for=condition=Updated --timeout="${ODF_MCP_UPDATE_WAIT_TIMEOUT}"
 fi
 
 {
@@ -97,7 +97,8 @@ spec:
 ocEOF
 
 oc wait "catalogSource/${odfCatalogName}" -n openshift-marketplace \
-    --for=jsonpath='{.status.connectionState.lastObservedState}=READY' --timeout='10m'
+    --for=jsonpath='{.status.connectionState.lastObservedState}=READY' \
+    --timeout="${ODF_CATALOG_WAIT_TIMEOUT}"
 
 oc label "CatalogSource/${odfCatalogName}" -n openshift-marketplace ocs-operator-internal=true
 
@@ -137,7 +138,8 @@ ocEOF
     # a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
     # Subshell isolates SECONDS=0 so the parent shell's elapsed-time counter is not reset.
     typeset csvName=''
-    typeset -i wInt=10 wMax=300
+    typeset -i wInt="${ODF_OLM_INSTALLEDCSV_POLL_INTERVAL}" \
+        wMax="${ODF_OLM_INSTALLEDCSV_POLL_TIMEOUT}"
     SECONDS=0
     until [[ -n "${csvName}" ]]; do
         csvName="$(oc -n "${odfInstallNamespace}" \
@@ -159,7 +161,7 @@ ocEOF
     # Phase 2: CSV name is now known; oc wait with the exact value is safe.
     if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
             --for=jsonpath='{.status.phase}'=Succeeded \
-            --timeout=15m; then
+            --timeout="${ODF_CSV_WAIT_TIMEOUT}"; then
         oc -n "${odfInstallNamespace}" get csv -o wide || true
         exit 1
     fi
@@ -171,8 +173,10 @@ ocEOF
 # pod is running. Sub-operators (ocs-operator, noobaa-operator, rook-ceph-operator) are
 # installed asynchronously afterward; storageclusters.ocs.openshift.io is owned by ocs-operator
 # and does not exist until it runs. --for=create blocks until the object appears.
-oc wait crd/storageclusters.ocs.openshift.io --for=create --timeout=10m
-oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' --timeout=5m
+oc wait crd/storageclusters.ocs.openshift.io --for=create \
+    --timeout="${ODF_CRD_CREATE_WAIT_TIMEOUT}"
+oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' \
+    --timeout="${ODF_CRD_ESTABLISHED_WAIT_TIMEOUT}"
 
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
     --selector='node-role.kubernetes.io/worker'
@@ -219,8 +223,10 @@ ocEOF
 # A stuck CSI node plugin pod blocks OSD join and surfaces only as a 180m timeout otherwise.
 # DaemonSet name is deterministic: <namespace>.rbd.csi.ceph.com-nodeplugin.
 typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
-oc wait "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --for=create --timeout=30m
-if ! oc rollout status "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --timeout=30m; then
+oc wait "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --for=create \
+    --timeout="${ODF_RBD_CSI_WAIT_TIMEOUT}"
+if ! oc rollout status "daemonset/${rbdDs}" -n "${odfInstallNamespace}" \
+        --timeout="${ODF_RBD_CSI_WAIT_TIMEOUT}"; then
     oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide || true
     oc -n "${odfInstallNamespace}" get pods \
         -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
@@ -245,7 +251,21 @@ fi
 # Default SC: legacy jobs use ceph-rbd; CNV+ODF jobs set ODF_DEFAULT_STORAGE_CLASS to
 # ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO boot-image imports land on
 # the virt SC before p2p-acm-cnv-install-policy (avoids tear-down/reimport in CNV tests).
-typeset defaultSc="${ODF_DEFAULT_STORAGE_CLASS:-${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd}"
+typeset defaultSc="${ODF_DEFAULT_STORAGE_CLASS}"
+[[ -n "${defaultSc}" ]] || defaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
+
+# OCS creates the virt SC after StorageCluster Available; annotating immediately fails with NotFound.
+if [[ "${defaultSc}" == *-ceph-rbd-virtualization ]]; then
+    if ! oc wait "storageclass/${defaultSc}" --for=create \
+            --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
+        oc get sc || true
+        oc get "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
+            -n "${odfInstallNamespace}" -o yaml \
+            > "${ARTIFACT_DIR}/storagecluster.yaml" || true
+        exit 1
+    fi
+fi
+
 oc get sc -o name | xargs -rI{} oc annotate {} \
     storageclass.kubernetes.io/is-default-class- \
     storageclass.kubevirt.io/is-default-virt-class- --overwrite
@@ -255,4 +275,6 @@ if [[ "${defaultSc}" == *-ceph-rbd-virtualization ]]; then
     oc annotate storageclass "${defaultSc}" \
         storageclass.kubevirt.io/is-default-virt-class=true --overwrite
 fi
+
+popd
 true
