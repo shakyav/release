@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Debug/experimental CNV OCP upgrade tests: same role as interop-tests-openshift-virtualization-tests
-# with hardened ODF CSI restart, VolumeSnapshot cleanup, PVC idle wait, and optional 3-phase pytest.
+# with hardened ODF CSI restart, VolumeSnapshot class setup, boot-image wait, and optional 3-phase pytest.
 #
 # Split mode (CNV_UPGRADE_PYTEST_SPLIT=true): pre-upgrade pytest → spoke OCP upgrade (ACM ManifestWork
 # by default, or product_upgrade pytest when CNV_SPOKE_UPGRADE_VIA_ACM=false) → post-upgrade pytest.
@@ -50,50 +50,9 @@ SetDefaultStorageClassForCnv() {
     true
 }
 
-# Return 0 if full tear-down/reimport is required; 1 if wait-only is enough.
-Cnv__BootImagesNeedReimport() {
-    typeset dvNamespace="openshift-virtualization-os-images"
-    typeset targetSc="${CNV_TARGET_STORAGE_CLASS}"
-
-    if [[ "${CNV_FORCE_REIMPORT_DATAVOLUMES}" == "true" ]]; then
-        : "CNV_FORCE_REIMPORT_DATAVOLUMES=true"
-        return 0
-    fi
-
-    typeset defaultSc=''
-    defaultSc="$(
-        oc get storageclass -o json \
-            | jq -r --arg t "${targetSc}" '
-                .items[]
-                | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true")
-                | .metadata.name
-                | select(. == $t)'
-    )"
-    if [[ -z "${defaultSc}" ]]; then
-        : "Cluster default StorageClass is not ${targetSc}"
-        return 0
-    fi
-
-    if oc get pvc -n "${dvNamespace}" --no-headers 2>/dev/null \
-        | awk '$2 ~ /Terminating|Pending|Lost/ { exit 0 } END { exit 1 }'; then
-        : "Boot-image namespace has PVCs not Bound"
-        return 0
-    fi
-
-    typeset pvcName pvcSc=''
-    while IFS= read -r pvcName; do
-        [[ -z "${pvcName}" ]] && continue
-        pvcSc="$(oc get pvc "${pvcName}" -n "${dvNamespace}" -o jsonpath='{.spec.storageClassName}')"
-        if [[ -n "${pvcSc}" && "${pvcSc}" != "${targetSc}" ]]; then
-            : "PVC ${dvNamespace}/${pvcName} uses ${pvcSc}, want ${targetSc}"
-            return 0
-        fi
-    done < <(oc get pvc -n "${dvNamespace}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
-        | tr ' ' '\n')
-
-    return 1
-}
-
+# Ensure HCO common boot images in openshift-virtualization-os-images are UpToDate on the
+# target StorageClass. Full tear-down/reimport is not required when deploy-odf sets
+# ODF_DEFAULT_STORAGE_CLASS to the virt SC before CNV policy install.
 Cnv__WaitBootImagesUpToDate() {
     typeset dvNamespace="openshift-virtualization-os-images"
     typeset -i pvcWaitTimeout="${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
@@ -127,15 +86,8 @@ Cnv__WaitBootImagesUpToDate() {
 }
 
 Cnv__PrepareBootImages() {
-    if Cnv__BootImagesNeedReimport; then
-        : "Running full boot-image reimport (wrong SC, stuck PVCs, or forced)"
-        printf '%s\n' 'full_reimport' > "${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt"
-        Cnv__ReimportDatavolumes
-    else
-        : "Skipping reimport; boot images already on ${CNV_TARGET_STORAGE_CLASS}"
-        printf '%s\n' 'wait_only' > "${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt"
-        Cnv__WaitBootImagesUpToDate
-    fi
+    printf '%s\n' 'wait_only' > "${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt"
+    Cnv__WaitBootImagesUpToDate
     true
 }
 
@@ -202,21 +154,6 @@ Cnv__ToggleCommonBootImageImport() {
     true
 }
 
-Cnv__DeleteDvNamespaceSnapshotContents() {
-    typeset dvNamespace="${1:?}"
-    typeset vscName
-    for vscName in $(
-        oc get volumesnapshotcontent -o json \
-            | jq -r --arg ns "${dvNamespace}" '
-                .items[]
-                | select(.spec.volumeSnapshotRef.namespace == $ns)
-                | .metadata.name'
-    ); do
-        oc delete volumesnapshotcontent "${vscName}" --wait=false --ignore-not-found
-    done
-    true
-}
-
 Cnv__WaitNamespacePvcsIdle() {
     typeset ns="${1:?}"; (($#)) && shift
     typeset -i wMax="${1:?}"; (($#)) && shift
@@ -254,69 +191,6 @@ Cnv__ForceDeleteStuckPvcs() {
         oc patch pvc "${pvcName}" -n "${ns}" \
             -p '{"metadata":{"finalizers":null}}' --type=merge || true
     done
-    true
-}
-
-Cnv__ReimportDatavolumes() {
-    typeset dvNamespace="openshift-virtualization-os-images"
-    typeset -i snapshotDeleteTimeoutSec="${CNV_VOLUME_SNAPSHOT_DELETE_TIMEOUT}"
-    typeset -i pvcWaitTimeout="${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
-
-    Cnv__ToggleCommonBootImageImport "false"
-    sleep 1
-
-    oc wait dataimportcrons -n "${dvNamespace}" --all --for='delete' --timeout=10m
-
-    oc delete datasources -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron'
-
-    oc delete datavolumes -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron'
-
-    (
-        typeset -i wMax=300 vsName vscName deleted=false
-        SECONDS=0
-        until (( deleted )); do
-            : "Deleting volumesnapshots in ${dvNamespace} (${SECONDS}/${wMax}s)..."
-
-            if oc delete volumesnapshots -n "${dvNamespace}" \
-                --selector=cdi.kubevirt.io/dataImportCron \
-                --timeout="${snapshotDeleteTimeoutSec}s" --ignore-not-found; then
-                : "Successfully deleted all volumesnapshots"
-                deleted=true
-            else
-                if (( SECONDS >= wMax )); then
-                    Cnv__DeleteDvNamespaceSnapshotContents "${dvNamespace}"
-                    oc get volumesnapshot,volumesnapshotcontent -A \
-                        > "${ARTIFACT_DIR}/cnv-dangling-snapshots.txt" || true
-                    : "Failed to delete all volumesnapshots after ${wMax}s"
-                    exit 1
-                fi
-                Cnv__DeleteDvNamespaceSnapshotContents "${dvNamespace}"
-                for vsName in $(oc get volumesnapshot -n "${dvNamespace}" \
-                    --selector=cdi.kubevirt.io/dataImportCron \
-                    -ojsonpath='{.items[*].metadata.name}'); do
-                    vscName="$(oc get volumesnapshotcontent -o json \
-                        | jq -r --arg vsName "${vsName}" \
-                        '.items[] | select(.spec.volumeSnapshotRef.name == $vsName) | .metadata.name')"
-                    [[ -n "${vscName}" ]] \
-                        && oc annotate volumesnapshotcontent "${vscName}" \
-                            example.com/dummy-annotation="retry-delete" --overwrite
-                done
-            fi
-        done
-        true
-    )
-
-    oc delete pvc -n "${dvNamespace}" --selector='cdi.kubevirt.io/dataImportCron' --wait=false
-
-    if ! Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${pvcWaitTimeout}"; then
-        Cnv__ForceDeleteStuckPvcs "${dvNamespace}"
-        Cnv__WaitNamespacePvcsIdle "${dvNamespace}" 300
-    fi
-
-    Cnv__ToggleCommonBootImageImport "true"
-    sleep 10
-    oc wait DataImportCron -n "${dvNamespace}" --all --for=condition=UpToDate --timeout=20m
-    oc get pvc -n "${dvNamespace}"
     true
 }
 

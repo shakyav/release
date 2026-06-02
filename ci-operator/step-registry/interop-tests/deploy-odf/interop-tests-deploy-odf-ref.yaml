@@ -39,3 +39,9 @@ ref:
   - name: ODF_STORAGE_CLUSTER_WAIT_TIMEOUT
     documentation: How long to wait for the StorageCluster Available condition. Bare metal worker nodes (e.g. c5n.metal) typically need more than the old hardcoded 180m. Accepts any oc wait duration (e.g. 180m, 240m, 4h).
     default: "240m"
+  - name: ODF_DEFAULT_STORAGE_CLASS
+    documentation: |-
+      Cluster default StorageClass after ODF is Available. Empty = ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd.
+      For CNV interop set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO common boot
+      images import on the virt SC before CNV policy install (also sets kubevirt default when virt SC).
+    default: ""

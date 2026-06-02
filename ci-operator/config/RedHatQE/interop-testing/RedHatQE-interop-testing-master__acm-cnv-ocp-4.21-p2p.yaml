@@ -111,6 +111,7 @@ tests:
       FIREWATCH_DEFAULT_JIRA_PROJECT: LPINTEROP
       FIREWATCH_FAIL_WITH_TEST_FAILURES: "true"
       OCP_VERSION: "4.20"
+      ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization
       ODF_DEPLOY_ON_SPOKE: "true"
       ODF_OPERATOR_CHANNEL: stable-4.20
       ODF_VERSION_MAJOR_MINOR: "4.20"

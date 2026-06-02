@@ -93,18 +93,9 @@ ref:
       When set, patch spoke ClusterVersion channel before ACM ManifestWork upgrade (e.g. stable-4.22).
   - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
     default: "600"
-    documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to finish deleting after reimport.
-  - name: CNV_VOLUME_SNAPSHOT_DELETE_TIMEOUT
-    default: "120"
-    documentation: Per-attempt timeout for oc delete volumesnapshots during reimport.
+    documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to reach Bound/idle.
   - name: CNV_TARGET_STORAGE_CLASS
     default: "ocs-storagecluster-ceph-rbd-virtualization"
     documentation: |-
-      StorageClass for CNV boot images and tests. When cluster default and boot-image PVCs
-      already use this SC (e.g. after interop-tests-deploy-odf sets virt default), reimport
-      is skipped unless CNV_FORCE_REIMPORT_DATAVOLUMES=true.
-  - name: CNV_FORCE_REIMPORT_DATAVOLUMES
-    default: "false"
-    documentation: |-
-      When true, always run full boot-image tear-down/reimport. When false, reimport only if
-      default SC mismatch, stuck PVCs, or PVCs on another StorageClass.
+      StorageClass for CNV boot images and pytest. Pair with deploy-odf ODF_DEFAULT_STORAGE_CLASS
+      set to the same virt SC before p2p-acm-cnv-install-policy.
