@@ -47,11 +47,14 @@ Post-upgrade tests depend on `test_ocp_upgrade_process` completing. Phase 3a run
 
 Set `CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST=true` only if you accept post tests being skipped by pytest-dependency.
 
-## Boot images: conditional reimport
+## Boot images (wait-only)
 
-See prior README section — `CNV_FORCE_REIMPORT_DATAVOLUMES`, `cnv-boot-image-prep-mode.txt`.
+HCO common boot images in `openshift-virtualization-os-images` must be `UpToDate` before pytest.
+This step does **not** tear down/reimport boot-image DataVolumes.
 
-Pair with ODF deploy setting virt default StorageClass before `p2p-acm-cnv-install-policy` for `wait_only` reimport.
+Set `ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization` on
+`interop-tests-deploy-odf` (before `p2p-acm-cnv-install-policy`) so imports land on the virt SC.
+Artifact: `${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt` (`wait_only`).
 
 ## Env vars (ref.yaml)
 
@@ -65,8 +68,7 @@ Pair with ODF deploy setting virt default StorageClass before `p2p-acm-cnv-insta
 | `CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST` | `false` | Skip phase-3a dependency test |
 | `TARGET_CHANNEL` | *(empty)* | Spoke channel patch before upgrade |
 | `CNV_SPOKE_UPGRADE_WAIT_TIMEOUT` | `3h` | Spoke `ClusterVersion` wait |
-| `CNV_TARGET_STORAGE_CLASS` | `ocs-storagecluster-ceph-rbd-virtualization` | Boot images + tests |
-| `CNV_FORCE_REIMPORT_DATAVOLUMES` | `false` | Force full reimport |
+| `CNV_TARGET_STORAGE_CLASS` | `ocs-storagecluster-ceph-rbd-virtualization` | Boot images + pytest SC |
 
 ## How to run in CI
 

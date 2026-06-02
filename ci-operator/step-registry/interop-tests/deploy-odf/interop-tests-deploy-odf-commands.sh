@@ -242,6 +242,17 @@ if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
     exit 1
 fi
 
-oc get sc -o name | xargs -I{} oc annotate {} storageclass.kubernetes.io/is-default-class-
-oc annotate storageclass "${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd" storageclass.kubernetes.io/is-default-class=true
+# Default SC: legacy jobs use ceph-rbd; CNV+ODF jobs set ODF_DEFAULT_STORAGE_CLASS to
+# ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization so HCO boot-image imports land on
+# the virt SC before p2p-acm-cnv-install-policy (avoids tear-down/reimport in CNV tests).
+typeset defaultSc="${ODF_DEFAULT_STORAGE_CLASS:-${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd}"
+oc get sc -o name | xargs -rI{} oc annotate {} \
+    storageclass.kubernetes.io/is-default-class- \
+    storageclass.kubevirt.io/is-default-virt-class- --overwrite
+oc annotate storageclass "${defaultSc}" \
+    storageclass.kubernetes.io/is-default-class=true --overwrite
+if [[ "${defaultSc}" == *-ceph-rbd-virtualization ]]; then
+    oc annotate storageclass "${defaultSc}" \
+        storageclass.kubevirt.io/is-default-virt-class=true --overwrite
+fi
 true
