@@ -369,9 +369,13 @@ MapTestsForComponentReadiness() {
 }
 
 PatchAdminAcksForUpgrade() {
-    typeset upgradeableMsg ackKey
+    # Spoke cluster: KUBECONFIG is managed-cluster-kubeconfig when CNV_TESTS_UPGRADE_ONLY=true.
+    typeset upgradeableMsg ackKey=''
     upgradeableMsg="$(oc get clusterversion version -o jsonpath='{.status.conditions[?(@.type=="Upgradeable")].message}')"
-    ackKey="$(grep -oE 'ack-[a-zA-Z0-9.-]+' <<<"${upgradeableMsg}" | head -1)"
+    if [[ -n "${upgradeableMsg}" ]]; then
+        # grep exits 1 when no ack-* token is present; must not trip set -e before the skip branch.
+        ackKey="$(grep -oE 'ack-[a-zA-Z0-9.-]+' <<<"${upgradeableMsg}" | head -1 || true)"
+    fi
     if [[ -n "${ackKey}" ]]; then
         : "Patching admin-ack '${ackKey}' from Upgradeable condition"
         oc patch configmap admin-acks-upgrades -n openshift-config \
