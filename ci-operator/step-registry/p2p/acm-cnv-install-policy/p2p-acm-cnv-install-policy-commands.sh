@@ -29,6 +29,47 @@ need oc
 need jq
 
 #=====================
+# ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
+#=====================
+ConfigureOdfVirtStorageClassDefaults() {
+    typeset -r virtSc="${ODF_DEFAULT_STORAGE_CLASS:-ocs-storagecluster-ceph-rbd-virtualization}"
+    [[ "${virtSc}" == *-ceph-rbd-virtualization ]] || return 0
+
+    oc wait crd/virtualmachines.kubevirt.io --for=create \
+        --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"
+
+    if ! oc wait "storageclass/${virtSc}" --for=create \
+            --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
+        oc get sc || true
+        oc get storageconsumer -n openshift-storage -o yaml \
+            > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>/dev/null || true
+        exit 1
+    fi
+
+    oc get sc -o name | xargs -rI{} oc annotate {} \
+        storageclass.kubernetes.io/is-default-class- \
+        storageclass.kubevirt.io/is-default-virt-class- --overwrite
+    oc annotate storageclass "${virtSc}" \
+        storageclass.kubernetes.io/is-default-class=true \
+        storageclass.kubevirt.io/is-default-virt-class=true --overwrite
+
+    typeset -r snapClass='ocs-storagecluster-rbdplugin-snapclass'
+    if oc get volumesnapshotclass "${snapClass}" &>/dev/null; then
+        oc get volumesnapshotclass -o name \
+            | xargs -rI{} oc annotate {} snapshot.storage.kubernetes.io/is-default-class- --overwrite
+        oc annotate volumesnapshotclass "${snapClass}" \
+            snapshot.storage.kubernetes.io/is-default-class=true --overwrite
+        typeset -r snapCtrlNs='openshift-cluster-storage-operator'
+        typeset -r snapDeploy='csi-snapshot-controller'
+        if oc -n "${snapCtrlNs}" get deployment "${snapDeploy}" &>/dev/null; then
+            oc -n "${snapCtrlNs}" rollout restart "deployment/${snapDeploy}"
+            oc -n "${snapCtrlNs}" rollout status "deployment/${snapDeploy}" --timeout=5m
+        fi
+    fi
+    true
+}
+
+#=====================
 # Configuration variables
 #=====================
 cluster_name="$(cat "${SHARED_DIR}/managed-cluster-name")"
@@ -245,6 +286,9 @@ EOF
 # and the ConfigurationPolicy creates the HyperConverged CR.
 # We only need to wait for the final availability status.
 export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
+
+echo "[INFO] Waiting for CNV operator (KubeVirt CRD) and ODF virt StorageClass"
+ConfigureOdfVirtStorageClassDefaults
 
 echo "[INFO] Waiting for HyperConverged operator to become available (timeout=${wait_timeout_minutes}m)"
 echo "[INFO] This includes operator installation, CRD registration, CR creation, and reconciliation"

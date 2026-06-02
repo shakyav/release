@@ -11,4 +11,16 @@ ref:
       cpu: '1'
       memory: 500Mi
   documentation: |-
-    Installs CNV on spoke/managed cluster deploying policy from ACM hub targeted towards managed cluster
+    Installs CNV on spoke/managed cluster deploying policy from ACM hub targeted towards managed cluster.
+    When ODF_DEFAULT_STORAGE_CLASS is the virt SC, waits for KubeVirt CRD and virt StorageClass after
+    policy apply, sets cluster/kubevirt defaults and VolumeSnapshotClass before HyperConverged Available.
+  env:
+  - name: ODF_DEFAULT_STORAGE_CLASS
+    documentation: |-
+      When set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization, this step waits for the virt
+      StorageClass (created by ODF after CNV operator registers virtualmachines.kubevirt.io) and sets
+      default annotations before HCO boot-image import completes.
+    default: ""
+  - name: ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT
+    documentation: Max time to wait for KubeVirt CRD and virt StorageClass after CNV policy apply.
+    default: "30m"
