@@ -259,6 +259,8 @@ ConfigureOdfVirtStorageClassDefaults() {
     if ! oc --kubeconfig="${kubeconfig}" wait "storageclass/${virtSc}" --for=create \
             --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
         oc --kubeconfig="${kubeconfig}" get sc || true
+        oc --kubeconfig="${kubeconfig}" get crd/virtualmachines.kubevirt.io -o yaml \
+            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>/dev/null || true
         oc --kubeconfig="${kubeconfig}" get storageconsumer -n openshift-storage -o yaml \
             > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>/dev/null || true
         exit 1
