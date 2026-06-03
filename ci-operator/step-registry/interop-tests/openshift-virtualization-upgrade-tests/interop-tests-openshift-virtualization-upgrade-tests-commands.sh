@@ -50,6 +50,40 @@ SetDefaultStorageClassForCnv() {
     true
 }
 
+# Interop pytest runs with --latest-rhel; CentOS/Fedora containerdisk crons may stay NotUpToDate
+# (NoDigest) on restricted clusters and must not block the job.
+Cnv__WaitRhelBootImportCronsUpToDate() {
+    typeset dvNamespace="${1:?}"; (($#)) && shift
+    typeset -r waitTimeout="${1:-20m}"
+    typeset -i appearTimeoutSec=600
+    typeset -i deadline=$((SECONDS + appearTimeoutSec))
+    typeset -a bootCrons=()
+    typeset cronName
+
+    while (( SECONDS < deadline )); do
+        bootCrons=()
+        while read -r cronName; do
+            [[ -n "${cronName}" ]] && bootCrons+=("${cronName}")
+        done < <(
+            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+                | grep -E '^(rhel[0-9]+|windows[0-9]*)-image-cron$' || true
+        )
+        ((${#bootCrons[@]})) && break
+        sleep 10
+    done
+
+    ((${#bootCrons[@]})) || {
+        : "No RHEL/Windows DataImportCrons in ${dvNamespace} after ${appearTimeoutSec}s"
+        exit 1
+    }
+
+    for cronName in "${bootCrons[@]}"; do
+        oc wait DataImportCron -n "${dvNamespace}" "${cronName}" \
+            --for=condition=UpToDate --timeout="${waitTimeout}"
+    done
+    true
+}
+
 # Ensure HCO common boot images in openshift-virtualization-os-images are UpToDate on the
 # target StorageClass. Full tear-down/reimport is not required when deploy-odf sets
 # ODF_DEFAULT_STORAGE_CLASS to the virt SC before CNV policy install.
@@ -68,13 +102,7 @@ Cnv__WaitBootImagesUpToDate() {
         : "enableCommonBootImageImport already true"
     fi
 
-    if oc get dataimportcron -n "${dvNamespace}" --no-headers 2>/dev/null | grep -q .; then
-        oc wait DataImportCron -n "${dvNamespace}" --all --for=condition=UpToDate --timeout=20m
-    else
-        : "No DataImportCrons yet; waiting for HCO to create them"
-        sleep 10
-        oc wait DataImportCron -n "${dvNamespace}" --all --for=condition=UpToDate --timeout=20m
-    fi
+    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}" 20m
 
     if ! Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${pvcWaitTimeout}"; then
         Cnv__ForceDeleteStuckPvcs "${dvNamespace}"
