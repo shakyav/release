@@ -2,6 +2,10 @@
 
 set -euxo pipefail; shopt -s inherit_errexit
 
+eval "$(
+    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+)"; EnsureReqs jq
+
 #=====================
 # Validate required files and variables
 #=====================
@@ -26,7 +30,6 @@ need() {
 }
 
 need oc
-need jq
 
 #=====================
 # ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
@@ -41,6 +44,8 @@ ConfigureOdfVirtStorageClassDefaults() {
     if ! oc wait "storageclass/${virtSc}" --for=create \
             --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
         oc get sc || true
+        oc get crd/virtualmachines.kubevirt.io -o yaml \
+            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>/dev/null || true
         oc get storageconsumer -n openshift-storage -o yaml \
             > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>/dev/null || true
         exit 1
@@ -329,3 +334,4 @@ while true; do
 done
 
 echo "[INFO] CNV installation via policy completed successfully"
+true
