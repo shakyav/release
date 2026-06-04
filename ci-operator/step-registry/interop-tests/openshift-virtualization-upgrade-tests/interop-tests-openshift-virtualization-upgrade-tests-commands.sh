@@ -244,6 +244,37 @@ ConfigureOdfVolumeSnapshotClass() {
     true
 }
 
+# Explicitly set spec.claimPropertySets on the CDI StorageProfile so DataVolumes that do
+# not specify accessModes (e.g. VM rootdisk templates, CDI clones) always resolve to
+# ReadWriteMany Block. This is required for KubeVirt live migration: an RWO RBD volume
+# cannot be attached to a migration target while the source virt-launcher still holds it,
+# causing "operation already exists" errors from the ceph-csi node plugin.
+# Setting spec (not just status) makes the override durable across CDI pod restarts.
+EnsureCdiStorageProfileRwx() {
+    typeset storageClassName="${1:?}"; (($#)) && shift
+
+    if ! oc get storageprofile "${storageClassName}" &>/dev/null; then
+        : "StorageProfile ${storageClassName} not found; skipping RWX patch"
+        return 0
+    fi
+
+    oc patch storageprofile "${storageClassName}" --type=merge -p \
+        "$(jq -cn '{
+            "spec": {
+                "claimPropertySets": [
+                    {"accessModes": ["ReadWriteMany"], "volumeMode": "Block"},
+                    {"accessModes": ["ReadWriteOnce"], "volumeMode": "Block"},
+                    {"accessModes": ["ReadWriteOnce"], "volumeMode": "Filesystem"}
+                ]
+            }
+        }')"
+
+    : "StorageProfile ${storageClassName} patched — RWX Block is now the first claimPropertySet"
+    oc get storageprofile "${storageClassName}" \
+        -o jsonpath='{.spec.claimPropertySets}' | jq .
+    true
+}
+
 WaitOdfCsiHealthy() {
     typeset -r odfNs="openshift-storage"
     typeset -r rbdDeploy="openshift-storage.rbd.csi.ceph.com-ctrlplugin"
@@ -601,6 +632,7 @@ hcoSubscription="$(oc get subscription.operators.coreos.com -n openshift-cnv -o 
 oc get sc
 SetDefaultStorageClassForCnv "${CNV_TARGET_STORAGE_CLASS}"
 ConfigureOdfVolumeSnapshotClass
+EnsureCdiStorageProfileRwx "${CNV_TARGET_STORAGE_CLASS}"
 oc get sc
 WaitOdfCsiHealthy
 Cnv__PrepareBootImages
