@@ -139,6 +139,40 @@ function cnv::toggle_common_boot_image_import () {
     --timeout='5m'
 }
 
+# Interop pytest runs with --latest-rhel; CentOS/Fedora containerdisk crons may stay NotUpToDate
+# (NoDigest) on restricted clusters and must not block the job.
+Cnv__WaitRhelBootImportCronsUpToDate() {
+    typeset dvNamespace="${1:?}"; (($#)) && shift
+    typeset -r waitTimeout="${1:-20m}"
+    typeset -i appearTimeoutSec=600
+    typeset -i deadline=$((SECONDS + appearTimeoutSec))
+    typeset -a rhelCrons=()
+    typeset cronName
+
+    while (( SECONDS < deadline )); do
+        rhelCrons=()
+        while read -r cronName; do
+            [[ -n "${cronName}" ]] && rhelCrons+=("${cronName}")
+        done < <(
+            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+                | grep -E '^rhel[0-9]+-image-cron$' || true
+        )
+        ((${#rhelCrons[@]})) && break
+        sleep 10
+    done
+
+    ((${#rhelCrons[@]})) || {
+        : "No RHEL DataImportCrons in ${dvNamespace} after ${appearTimeoutSec}s"
+        exit 1
+    }
+
+    for cronName in "${rhelCrons[@]}"; do
+        oc wait DataImportCron -n "${dvNamespace}" "${cronName}" \
+            --for=condition=UpToDate --timeout="${waitTimeout}"
+    done
+    true
+}
+
 #
 # Re-import datavolumes, for example after changing the default storage class
 #
@@ -193,13 +227,11 @@ function cnv::reimport_datavolumes() {
   # Finally, delete PVCs
   oc delete pvc -n "${dvnamespace}" --selector='cdi.kubevirt.io/dataImportCron'
 
-  echo "[DEBUG] Enable DataImportCron"
-  cnv::toggle_common_boot_image_import "true"
-  sleep 10
-  echo "[DEBUG] Wait for DataImportCron to re-import volumes"
-  oc wait DataImportCron -n "${dvnamespace}" --all --for=condition=UpToDate --timeout=20m
-  echo "[DEBUG] Printing persistent volume claims"
-  oc get pvc -n "${dvnamespace}"
+    Cnv__ToggleCommonBootImageImport "true"
+    sleep 10
+    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}" 20m
+    oc get pvc -n "${dvNamespace}"
+    true
 }
 
 binFolder="$(mktemp -d /tmp/bin.XXXX)"
