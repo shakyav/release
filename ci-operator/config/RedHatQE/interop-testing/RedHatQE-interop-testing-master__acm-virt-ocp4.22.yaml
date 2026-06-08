@@ -133,6 +133,7 @@ tests:
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
     - ref: p2p-acm-cnv-install-policy
+    - chain: acm-interop-p2p-submariner-install
     - ref: acm-interop-p2p-test-poc
   timeout: 20h0m0s
 zz_generated_metadata:
