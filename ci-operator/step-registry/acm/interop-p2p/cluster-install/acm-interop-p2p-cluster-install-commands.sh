@@ -22,6 +22,11 @@
 #   - managed-cluster-kubeconfig-{N}   : Admin kubeconfig
 #   - managed-cluster-metadata-{N}.json: Cluster metadata
 #
+# Networking:
+#   Each spoke gets non-overlapping pod/VPC/service CIDRs derived from its
+#   1-based index (hub defaults are 10.128.0.0/14, 10.0.0.0/16, 172.30.0.0/16).
+#   Batch CIDR lists are written to managed-cluster-*-network-cidrs files.
+#
 # Prerequisites:
 #   - Hub cluster with ACM installed
 #   - Valid AWS credentials in cluster profile
@@ -127,6 +132,24 @@ Need() {
 # Returns: JSON representation of the resource
 JsonGet() {
     oc -n "${1}" get "${2}" "${3}" -o json
+}
+
+# ResolveSpokeCidrs — derive non-overlapping install-config CIDRs per spoke index.
+# Hub IPI defaults (10.128.0.0/14, 10.0.0.0/16, 172.30.0.0/16) are skipped by
+# offsetting each 1-based spoke index (max 3 spokes supported by this step).
+# Arguments:
+#   $1 - cluster_idx (1-based)
+# Sets (caller-visible):
+#   clusterNetworkCidr, machineNetworkCidr, serviceNetworkCidr
+ResolveSpokeCidrs() {
+    typeset -i clusterIdx="${1:?}"
+    typeset -i clusterNetworkBaseOctet=$((128 + clusterIdx * 4))
+    typeset -i serviceNetworkBaseOctet=$((30 + clusterIdx))
+
+    clusterNetworkCidr="10.${clusterNetworkBaseOctet}.0.0/14"
+    machineNetworkCidr="10.${clusterIdx}.0.0/16"
+    serviceNetworkCidr="172.${serviceNetworkBaseOctet}.0.0/16"
+    true
 }
 
 #=====================
@@ -247,7 +270,8 @@ done
 
 echo "[INFO] Will create ${#cluster_names[@]} cluster(s):"
 for ((i = 0; i < ${#cluster_names[@]}; i++)); do
-    echo "[INFO]   Cluster $((i+1)): ${cluster_names[i]} -> Region: ${cluster_regions[i]}"
+    ResolveSpokeCidrs "$((i + 1))"
+    echo "[INFO]   Cluster $((i+1)): ${cluster_names[i]} -> Region: ${cluster_regions[i]} pod=${clusterNetworkCidr} vpc=${machineNetworkCidr} svc=${serviceNetworkCidr}"
 done
 
 #=====================
@@ -272,6 +296,21 @@ echo "[INFO] All cluster names written to ${all_cluster_names_file}"
 typeset all_cluster_regions_file="${SHARED_DIR}/managed-cluster-regions"
 printf '%s\n' "${cluster_regions[@]}" > "${all_cluster_regions_file}"
 echo "[INFO] All cluster regions written to ${all_cluster_regions_file}"
+
+# Write per-cluster network CIDRs (one CIDR per line, aligned with cluster index)
+typeset -a clusterNetworkCidrs=() machineNetworkCidrs=() serviceNetworkCidrs=()
+for ((i = 1; i <= ACM_SPOKE_CLUSTER_COUNT; i++)); do
+    ResolveSpokeCidrs "${i}"
+    clusterNetworkCidrs+=("${clusterNetworkCidr}")
+    machineNetworkCidrs+=("${machineNetworkCidr}")
+    serviceNetworkCidrs+=("${serviceNetworkCidr}")
+done
+printf '%s\n' "${clusterNetworkCidrs[@]}" > "${SHARED_DIR}/managed-cluster-cluster-network-cidrs"
+printf '%s\n' "${machineNetworkCidrs[@]}" > "${SHARED_DIR}/managed-cluster-machine-network-cidrs"
+printf '%s\n' "${serviceNetworkCidrs[@]}" > "${SHARED_DIR}/managed-cluster-service-network-cidrs"
+echo "[INFO] Cluster network CIDRs written to ${SHARED_DIR}/managed-cluster-cluster-network-cidrs"
+echo "[INFO] Machine network CIDRs written to ${SHARED_DIR}/managed-cluster-machine-network-cidrs"
+echo "[INFO] Service network CIDRs written to ${SHARED_DIR}/managed-cluster-service-network-cidrs"
 
 # Maintain backward compatibility with single-cluster workflows
 echo "${cluster_names[0]}" > "${SHARED_DIR}/managed-cluster-name"
@@ -302,8 +341,11 @@ CreateClusterResources() {
     typeset cluster_region="$3"
 
     echo "[INFO] =========================================="
+    ResolveSpokeCidrs "${cluster_idx}"
+
     echo "[INFO] Creating resources for cluster ${cluster_idx}/${ACM_SPOKE_CLUSTER_COUNT}: ${cluster_name}"
     echo "[INFO] Region: ${cluster_region}"
+    echo "[INFO] Pod CIDR: ${clusterNetworkCidr}  VPC CIDR: ${machineNetworkCidr}  Service CIDR: ${serviceNetworkCidr}"
     echo "[INFO] =========================================="
 
     # Create dedicated namespace for the cluster
@@ -421,6 +463,9 @@ ocEOF
         --argjson wkR  "${ACM_SPOKE_WORKER_REPLICAS}" \
         --arg netType  "${ACM_SPOKE_NETWORK_TYPE}" \
         --arg region   "${cluster_region}" \
+        --arg clusterNetCidr "${clusterNetworkCidr}" \
+        --arg machineNetCidr "${machineNetworkCidr}" \
+        --arg serviceNetCidr "${serviceNetworkCidr}" \
         --arg sshKey   "$(<"${CLUSTER_PROFILE_DIR}/ssh-publickey")" \
         '{
             "apiVersion": "v1",
@@ -444,9 +489,9 @@ ocEOF
             ],
             "networking": {
                 "networkType": $netType,
-                "clusterNetwork": [{"cidr": "10.128.0.0/14", "hostPrefix": 23}],
-                "machineNetwork": [{"cidr": "10.0.0.0/16"}],
-                "serviceNetwork": ["172.30.0.0/16"]
+                "clusterNetwork": [{"cidr": $clusterNetCidr, "hostPrefix": 23}],
+                "machineNetwork": [{"cidr": $machineNetCidr}],
+                "serviceNetwork": [$serviceNetCidr]
             },
             "platform": {"aws": {"region": $region}},
             "sshKey": $sshKey

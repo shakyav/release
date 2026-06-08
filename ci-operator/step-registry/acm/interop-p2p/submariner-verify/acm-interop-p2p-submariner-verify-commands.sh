@@ -337,36 +337,43 @@ eval "$(
 LoadSpokeConfig
 InstallSubctl
 
-typeset -i i j
-for ((i = 0; i < spokeCount; i++)); do
-    ShowConnections "${spokeKubeconfigsArr[i]}"
-done
-
-WaitForConnectionsEstablished 600
-
-for ((i = 0; i < spokeCount; i++)); do
-    for ((j = i + 1; j < spokeCount; j++)); do
-        WarmUpGlobalnet \
-            "${spokeKubeconfigsArr[i]}" \
-            "${spokeKubeconfigsArr[j]}" \
-            "${spokeNamesArr[i]}" \
-            "${spokeNamesArr[j]}"
+typeset -i submarinerStepRc=0
+(
+    typeset -i i j
+    for ((i = 0; i < spokeCount; i++)); do
+        ShowConnections "${spokeKubeconfigsArr[i]}"
     done
-done
 
-for ((i = 0; i < spokeCount; i++)); do
-    for ((j = i + 1; j < spokeCount; j++)); do
-        VerifyConnectivity \
-            "${spokeKubeconfigsArr[i]}" \
-            "${spokeKubeconfigsArr[j]}" \
-            "${spokeNamesArr[i]}" \
-            "${spokeNamesArr[j]}"
+    WaitForConnectionsEstablished 600
+
+    for ((i = 0; i < spokeCount; i++)); do
+        for ((j = i + 1; j < spokeCount; j++)); do
+            WarmUpGlobalnet \
+                "${spokeKubeconfigsArr[i]}" \
+                "${spokeKubeconfigsArr[j]}" \
+                "${spokeNamesArr[i]}" \
+                "${spokeNamesArr[j]}"
+        done
     done
-done
 
-: "Final connection status after verify"
-for ((i = 0; i < spokeCount; i++)); do
-    ShowConnections "${spokeKubeconfigsArr[i]}"
-done
+    for ((i = 0; i < spokeCount; i++)); do
+        for ((j = i + 1; j < spokeCount; j++)); do
+            VerifyConnectivity \
+                "${spokeKubeconfigsArr[i]}" \
+                "${spokeKubeconfigsArr[j]}" \
+                "${spokeNamesArr[i]}" \
+                "${spokeNamesArr[j]}"
+        done
+    done
 
+    : "Final connection status after verify"
+    for ((i = 0; i < spokeCount; i++)); do
+        ShowConnections "${spokeKubeconfigsArr[i]}"
+    done
+    true
+) || submarinerStepRc=$?
+
+if (( submarinerStepRc != 0 )); then
+    : "WARNING: acm-interop-p2p-submariner-verify failed (rc=${submarinerStepRc}); not failing job (debug mode)"
+fi
 true

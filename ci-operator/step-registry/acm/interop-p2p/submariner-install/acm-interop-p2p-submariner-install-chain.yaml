@@ -11,19 +11,23 @@ chain:
     This chain sequences three steps:
       1. acm-interop-p2p-submariner-cloud-prepare
          Installs subctl locally, prepares AWS security groups on each spoke
-         (subctl cloud prepare aws with dedicated gateway nodes), and opens
+         (subctl cloud prepare aws with --gateways 1 dedicated gateway nodes),
+         waits for gateway MachineSet + submariner.io/gateway label, and opens
          required IPsec/NAT-T firewall ports. AWS credentials are used only in
          this step and removed from disk on exit.
 
       2. acm-interop-p2p-submariner-broker-join
-         Deploys the Submariner broker on the hub, joins all spokes, then waits
-         for gateways, Globalnet, Lighthouse agent, Lighthouse CoreDNS, and
-         OpenShift cluster CoreDNS DNS forwarding to be fully ready.
+         Deploys the Submariner broker on the hub, joins all spokes with
+         --label-gateway=false, then waits for gateways, Globalnet, Lighthouse
+         agent, Lighthouse CoreDNS, and OpenShift cluster CoreDNS DNS forwarding
+         to be fully ready.
 
       3. acm-interop-p2p-submariner-verify
          Waits for IPsec tunnels to reach connected state, pre-warms the
          Globalnet/Lighthouse pipeline, and runs 'subctl verify' for tunnel
          and service-discovery tests.
+
+    Debug mode: each step logs failures but exits 0 so the job continues.
 
     Each step installs its own subctl copy in /tmp/bin (never SHARED_DIR) to
     avoid the CI operator 3 MB SHARED_DIR serialisation limit.

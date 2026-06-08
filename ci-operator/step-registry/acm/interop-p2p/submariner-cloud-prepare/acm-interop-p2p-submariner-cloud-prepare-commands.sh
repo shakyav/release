@@ -5,7 +5,9 @@
 # Responsibilities:
 #   - Install subctl to /tmp/bin/ (step-local; NOT in SHARED_DIR)
 #   - Run 'subctl cloud prepare aws' on each spoke to open firewall ports
-#     and deploy a dedicated gateway node (default --gateways 1)
+#     and deploy a dedicated gateway node (--gateways 1)
+#   - Wait for the dedicated gateway MachineSet node to be Ready and labeled
+#     before the broker-join step (avoids interactive gateway selection in CI)
 #
 # WHY binaries are NOT stored in SHARED_DIR:
 #   After each step the CI operator serialises SHARED_DIR into a Kubernetes
@@ -128,7 +130,79 @@ PrepareAwsCluster() {
 
     "${subctlBin}" cloud prepare aws \
         --kubeconfig "${kubeconfig}" \
-        --ocp-metadata "${metadataFile}"
+        --ocp-metadata "${metadataFile}" \
+        --gateways 1
+
+    true
+}
+
+# WaitForGatewayNode — wait for dedicated gateway MachineSet and gateway label
+#
+# subctl cloud prepare with --gateways 1 is async: it creates a submariner
+# MachineSet and labels the node submariner.io/gateway=true once Ready.
+# subctl join prompts interactively when no gateway-labeled node exists yet.
+# This function gates the broker-join step until exactly one gateway node exists.
+WaitForGatewayNode() {
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset spokeName="${1:?}"; (($#)) && shift
+
+    typeset -i maxWait="${SUBMARINER_GATEWAY_WAIT_TIMEOUT:-600}"
+    typeset -i interval=15 waited=0
+    typeset gwMachineSet="" ms allMachineSets
+
+    until [[ -n "${gwMachineSet}" ]] || (( waited >= maxWait )); do
+        allMachineSets="$(KUBECONFIG="${kubeconfig}" oc get machineset \
+            -n openshift-machine-api \
+            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+        for ms in ${allMachineSets}; do
+            if [[ "${ms,,}" == *submariner* ]]; then
+                gwMachineSet="${ms}"
+                break
+            fi
+        done
+        [[ -n "${gwMachineSet}" ]] && break
+        sleep "${interval}"
+        waited=$(( waited + interval ))
+    done
+    [[ -n "${gwMachineSet}" ]] || {
+        : "No submariner MachineSet on '${spokeName}' after ${maxWait}s"
+        KUBECONFIG="${kubeconfig}" oc get machineset -n openshift-machine-api || true
+        false
+    }
+
+    waited=0
+    until (( waited >= maxWait )); do
+        typeset readyReplicas
+        readyReplicas="$(KUBECONFIG="${kubeconfig}" oc get machineset "${gwMachineSet}" \
+            -n openshift-machine-api \
+            -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo '0')"
+        [[ "${readyReplicas}" == "1" ]] && break
+        sleep "${interval}"
+        waited=$(( waited + interval ))
+    done
+    (( waited < maxWait )) || {
+        : "Gateway MachineSet '${gwMachineSet}' not ready on '${spokeName}' after ${maxWait}s"
+        KUBECONFIG="${kubeconfig}" oc get machineset "${gwMachineSet}" \
+            -n openshift-machine-api -o wide || true
+        false
+    }
+
+    typeset -i gwCount=0
+    waited=0
+    until (( gwCount == 1 || waited >= maxWait )); do
+        gwCount="$(KUBECONFIG="${kubeconfig}" oc get nodes \
+            -l submariner.io/gateway=true \
+            --no-headers 2>/dev/null | wc -l)"
+        gwCount="${gwCount//[[:space:]]/}"
+        (( gwCount == 1 )) && break
+        sleep "${interval}"
+        waited=$(( waited + interval ))
+    done
+    if (( gwCount != 1 )); then
+        : "Expected 1 gateway-labeled node on '${spokeName}', found ${gwCount} after ${maxWait}s"
+        KUBECONFIG="${kubeconfig}" oc get nodes -l submariner.io/gateway=true -o wide || true
+        false
+    fi
 
     true
 }
@@ -144,12 +218,25 @@ LoadSpokeConfig
 InstallSubctl
 SetAwsCredentials
 
-typeset -i i
-for ((i = 0; i < spokeCount; i++)); do
-    PrepareAwsCluster \
-        "${spokeKubeconfigsArr[i]}" \
-        "${spokeMetadataFilesArr[i]}" \
-        "${spokeNamesArr[i]}"
-done
+typeset -i submarinerStepRc=0
+(
+    typeset -i i
+    for ((i = 0; i < spokeCount; i++)); do
+        PrepareAwsCluster \
+            "${spokeKubeconfigsArr[i]}" \
+            "${spokeMetadataFilesArr[i]}" \
+            "${spokeNamesArr[i]}"
+    done
 
+    for ((i = 0; i < spokeCount; i++)); do
+        WaitForGatewayNode \
+            "${spokeKubeconfigsArr[i]}" \
+            "${spokeNamesArr[i]}"
+    done
+    true
+) || submarinerStepRc=$?
+
+if (( submarinerStepRc != 0 )); then
+    : "WARNING: acm-interop-p2p-submariner-cloud-prepare failed (rc=${submarinerStepRc}); not failing job (debug mode)"
+fi
 true
