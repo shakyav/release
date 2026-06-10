@@ -1,10 +1,12 @@
 ref:
   as: interop-tests-openshift-virtualization-upgrade-tests
   documentation: |-
-    Experimental CNV OCP upgrade tests with strengthened ODF CSI/snapshot prep (debug).
-    Split mode: pre-upgrade pytest, spoke OCP upgrade via ACM ManifestWork (default), post-upgrade pytest.
-    Use instead of interop-tests-openshift-virtualization-tests while validating CSI fixes.
-    Not for production gating until promoted.
+    CNV upgrade tests on the ACM spoke cluster (managed-cluster-kubeconfig).
+    Runs pytest --upgrade cnv per openshift-virtualization-tests INSTALL_AND_UPGRADE.md.
+    Default target: latest CNV 4.21.x from production catalog (stable channel), resolved from
+    spoke packagemanifest when CNV_TARGET_MAJOR_MINOR is set.
+    Spoke OCP upgrade is handled by acm-interop-p2p-spoke-upgrade in a prior step.
+    Network upgrade tests are excluded via --ignore=tests/network/.
   from: openshift-virtualization-tests-sshpass
   commands: interop-tests-openshift-virtualization-upgrade-tests-commands.sh
   timeout: 4h0m0s
@@ -24,16 +26,13 @@ ref:
     requests:
       cpu: 100m
       memory: 200Mi
-  dependencies:
-    - name: "release:target"
-      env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
   env:
   - name: BW_PATH
     default: "/bw"
     documentation: Bitwarden folder
   - name: OCP_VERSION
     default: "4.13"
-    documentation: OpenShift Version
+    documentation: OpenShift Version (used for must-gather fallback image tag)
   - default: '|7820aea2-0d75-11e7-9259-28d244ea5a6d.hhav.f63e13'
     name: BREW_IMAGE_REGISTRY_USERNAME
     documentation: Brew image registry username for authenticated image pulls.
@@ -52,45 +51,34 @@ ref:
   - name: MAP_TESTS
     default: "false"
     documentation: Specify whether to update the test suite name for reporting tools
-  - name: CNV_TESTS_UPGRADE_ONLY
-    default: "true"
-    documentation: |-
-      When true, require managed-cluster-kubeconfig and run OCP upgrade tests only.
-      This debug step is intended for upgrade workflows (CNV_TESTS_UPGRADE_ONLY=true).
   - name: CNV_UPGRADE_PYTEST_SPLIT
     default: "true"
     documentation: |-
-      When true and CNV_TESTS_UPGRADE_ONLY=true, run three phases: pre-upgrade pytest
-      (-k before_upgrade), spoke OCP upgrade (ACM ManifestWork if CNV_SPOKE_UPGRADE_VIA_ACM=true),
-      post-upgrade pytest (-k after_upgrade) after test_ocp_upgrade_process dependency gate.
-  - name: CNV_SPOKE_UPGRADE_VIA_ACM
-    default: "true"
-    documentation: |-
-      When true with CNV_UPGRADE_PYTEST_SPLIT=true, upgrade spoke OCP via ACM ManifestWork on the hub
-      (not pytest product_upgrade). Set false to use pytest tests/install_upgrade_operators/product_upgrade.
-  - name: CNV_ACM_MANIFESTWORK_NAME
-    default: "spoke-ocp-upgrade"
-    documentation: ManifestWork name for spoke ClusterVersion desiredUpdate.
-  - name: CNV_ACM_MANIFESTWORK_NAMESPACE
-    default: ""
-    documentation: |-
-      Managed cluster namespace on hub for ManifestWork (defaults to ${SHARED_DIR}/managed-cluster-name).
-  - name: CNV_ACM_HUB_KUBECONFIG
-    default: ""
-    documentation: |-
-      Hub kubeconfig for ManifestWork apply (defaults to ${SHARED_DIR}/kubeconfig from acm-fetch-managed-clusters).
-  - name: CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST
+      When true, run three phases: pre-upgrade pytest (-k before_upgrade), CNV upgrade
+      (-m cnv_upgrade), post-upgrade pytest (-k after_upgrade).
+  - name: CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST
     default: "false"
     documentation: |-
-      When true, skip phase-3a test_ocp_upgrade_process (post-upgrade tests may be skipped by pytest-dependency).
-  - name: CNV_SPOKE_UPGRADE_WAIT_TIMEOUT
-    default: "3h"
+      When true, skip phase-3a test_cnv_upgrade_process (post-upgrade tests may be skipped by pytest-dependency).
+  - name: CNV_TARGET_MAJOR_MINOR
+    default: "4.21"
     documentation: |-
-      Max time to wait for spoke ClusterVersion Completed after ACM ManifestWork or product_upgrade.
-  - name: TARGET_CHANNEL
+      When set, resolves the latest available patch version (e.g. 4.21.8) from the spoke
+      packagemanifest on CNV_CHANNEL and sets CNV_TARGET_VERSION for --upgrade cnv. Leave empty
+      to use CNV_TARGET_VERSION as-is.
+  - name: CNV_TARGET_VERSION
+    default: "4.21.0"
+    documentation: Target CNV version for --upgrade cnv. Overridden when CNV_TARGET_MAJOR_MINOR is set.
+  - name: CNV_TARGET_IMAGE
     default: ""
     documentation: |-
-      When set, patch spoke ClusterVersion channel before ACM ManifestWork upgrade (e.g. stable-4.22).
+      Optional --cnv-image index path. Not required when CNV_SOURCE=production (GA from redhat-operators).
+  - name: CNV_SOURCE
+    default: "production"
+    documentation: CNV catalog source lane for upgrade (production, osbs, fbc).
+  - name: CNV_CHANNEL
+    default: "stable"
+    documentation: CNV subscription channel for upgrade (stable, candidate, nightly).
   - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
     default: "600"
     documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to reach Bound/idle.

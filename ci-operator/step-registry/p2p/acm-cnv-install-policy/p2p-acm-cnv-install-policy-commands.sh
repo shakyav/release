@@ -31,6 +31,42 @@ need() {
 
 need oc
 
+# Resolve latest kubevirt-hyperconverged version for major.minor from the spoke catalog.
+ResolveCnvLatestVersion() {
+    local majorMinor="$1"
+    local channel="$2"
+    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
+    local versionPrefix="${majorMinor}."
+
+    oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
+        -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .version' \
+        | sort -V | tail -n1
+}
+
+# Resolve latest kubevirt-hyperconverged CSV for major.minor from the spoke catalog.
+ResolveCnvStartingCsv() {
+    local majorMinor="$1"
+    local channel="$2"
+    local spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
+    local versionPrefix="${majorMinor}."
+
+    oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
+        -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .name' \
+        | sort -V | tail -n1
+}
+
 #=====================
 # ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
 #=====================
@@ -87,6 +123,35 @@ policy_ns="install-cnv"
 wait_timeout_minutes="${CNV_WAIT_TIMEOUT_MINUTES:-30}"
 poll_interval_seconds="${CNV_POLL_INTERVAL_SECONDS:-30}"
 
+typeset cnvPolicyChannel="${CNV_POLICY_CHANNEL:-stable}"
+typeset cnvPolicySource="${CNV_POLICY_SOURCE:-redhat-operators}"
+typeset cnvPolicySourceNs="${CNV_POLICY_SOURCE_NAMESPACE:-openshift-marketplace}"
+typeset cnvUpgradeApproval="${CNV_POLICY_UPGRADE_APPROVAL:-Automatic}"
+typeset cnvStartingCsv=""
+typeset cnvStartingCsvLine=""
+typeset cnvVersionsYaml=""
+
+if [[ -n "${CNV_POLICY_INSTALL_MAJOR_MINOR:-}" ]]; then
+    cnvStartingCsv="$(ResolveCnvStartingCsv "${CNV_POLICY_INSTALL_MAJOR_MINOR}" "${cnvPolicyChannel}")"
+    [[ -n "${cnvStartingCsv}" ]] || {
+        echo "[ERROR] No kubevirt-hyperconverged CSV found for ${CNV_POLICY_INSTALL_MAJOR_MINOR} on channel ${cnvPolicyChannel}" >&2
+        exit 1
+    }
+    typeset cnvStartingVersion
+    cnvStartingVersion="$(ResolveCnvLatestVersion "${CNV_POLICY_INSTALL_MAJOR_MINOR}" "${cnvPolicyChannel}")"
+    [[ -n "${cnvStartingVersion}" ]] || {
+        echo "[ERROR] No kubevirt-hyperconverged version found for ${CNV_POLICY_INSTALL_MAJOR_MINOR} on channel ${cnvPolicyChannel}" >&2
+        exit 1
+    }
+    cnvUpgradeApproval="${CNV_POLICY_UPGRADE_APPROVAL:-None}"
+    cnvStartingCsvLine="            startingCSV: ${cnvStartingCsv}"
+    cnvVersionsYaml="          versions:
+            - ${cnvStartingCsv}"
+    printf '%s\n' "${cnvStartingCsv}" > "${ARTIFACT_DIR}/cnv-policy-starting-csv"
+    printf '%s\n' "${cnvStartingVersion}" > "${ARTIFACT_DIR}/cnv-policy-starting-version"
+    echo "[INFO] CNV OperatorPolicy pin: channel=${cnvPolicyChannel} version=${cnvStartingVersion} csv=${cnvStartingCsv} upgradeApproval=${cnvUpgradeApproval}"
+fi
+
 #=====================
 # Create policy namespace
 #=====================
@@ -137,11 +202,12 @@ spec:
           subscription:
             name: kubevirt-hyperconverged
             namespace: openshift-cnv
-            channel: stable
-            source: redhat-operators
-            sourceNamespace: openshift-marketplace
-          upgradeApproval: Automatic
-          versions:
+            channel: ${cnvPolicyChannel}
+            source: ${cnvPolicySource}
+            sourceNamespace: ${cnvPolicySourceNs}
+${cnvStartingCsvLine}
+          upgradeApproval: ${cnvUpgradeApproval}
+${cnvVersionsYaml}
           operatorGroup:
             name: openshift-cnv
             namespace: openshift-cnv
@@ -332,6 +398,18 @@ while true; do
     echo "[INFO] Waiting for HyperConverged operator... (status: ${cond:-Unknown})"
     sleep "${poll_interval_seconds}"
 done
+
+if [[ -n "${cnvStartingCsv}" ]]; then
+    typeset installedCsv
+    installedCsv="$(oc get subscription kubevirt-hyperconverged -n openshift-cnv \
+        -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+    if [[ "${installedCsv}" != "${cnvStartingCsv}" ]]; then
+        echo "[ERROR] Expected CNV CSV ${cnvStartingCsv}, got ${installedCsv:-<none>}" >&2
+        oc get csv -n openshift-cnv > "${ARTIFACT_DIR}/cnv-csv-list.txt" || true
+        exit 1
+    fi
+    echo "[INFO] CNV pinned at ${installedCsv}; auto-upgrade disabled until CNV upgrade tests"
+fi
 
 echo "[INFO] CNV installation via policy completed successfully"
 true

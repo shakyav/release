@@ -1,17 +1,28 @@
 #!/bin/bash
 #
-# Debug/experimental CNV OCP upgrade tests: same role as interop-tests-openshift-virtualization-tests
-# with hardened ODF CSI restart, VolumeSnapshot class setup, boot-image wait, and optional 3-phase pytest.
-#
-# Split mode (CNV_UPGRADE_PYTEST_SPLIT=true): pre-upgrade pytest → spoke OCP upgrade (ACM ManifestWork
-# by default, or product_upgrade pytest when CNV_SPOKE_UPGRADE_VIA_ACM=false) → post-upgrade pytest.
-# acm-interop-p2p-cluster-upgrade upgrades the hub only, not the spoke.
+# CNV upgrade tests on the ACM spoke: cluster prep, then pytest --upgrade cnv. Target version is
+# resolved from spoke packagemanifest when CNV_TARGET_MAJOR_MINOR is set (e.g. latest 4.21.x).
+# Spoke OCP upgrade is a separate step (acm-interop-p2p-spoke-upgrade).
+# See openshift-virtualization-tests docs/INSTALL_AND_UPGRADE.md (CNV upgrade section).
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
 eval "$(
     curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
 )"; EnsureReqs jq
+
+# Resolve latest kubevirt-hyperconverged x.y.z for major.minor from the spoke catalog channel.
+ResolveCnvLatestVersion() {
+    typeset majorMinor="${1:?}" channel="${2:?}"
+    oc get packagemanifest kubevirt-hyperconverged -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${majorMinor}." '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .version' \
+        | sort -V | tail -n1
+}
 
 typeset -i startTime=$SECONDS
 
@@ -50,8 +61,6 @@ SetDefaultStorageClassForCnv() {
     true
 }
 
-# Interop pytest runs with --latest-rhel; CentOS/Fedora containerdisk crons may stay NotUpToDate
-# (NoDigest) on restricted clusters and must not block the job.
 Cnv__WaitRhelBootImportCronsUpToDate() {
     typeset dvNamespace="${1:?}"; (($#)) && shift
     typeset -r waitTimeout="${1:-20m}"
@@ -84,9 +93,6 @@ Cnv__WaitRhelBootImportCronsUpToDate() {
     true
 }
 
-# Ensure HCO common boot images in openshift-virtualization-os-images are UpToDate on the
-# target StorageClass. Full tear-down/reimport is not required when deploy-odf sets
-# ODF_DEFAULT_STORAGE_CLASS to the virt SC before CNV policy install.
 Cnv__WaitBootImagesUpToDate() {
     typeset dvNamespace="openshift-virtualization-os-images"
     typeset -i pvcWaitTimeout="${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
@@ -244,12 +250,6 @@ ConfigureOdfVolumeSnapshotClass() {
     true
 }
 
-# Explicitly set spec.claimPropertySets on the CDI StorageProfile so DataVolumes that do
-# not specify accessModes (e.g. VM rootdisk templates, CDI clones) always resolve to
-# ReadWriteMany Block. This is required for KubeVirt live migration: an RWO RBD volume
-# cannot be attached to a migration target while the source virt-launcher still holds it,
-# causing "operation already exists" errors from the ceph-csi node plugin.
-# Setting spec (not just status) makes the override durable across CDI pod restarts.
 EnsureCdiStorageProfileRwx() {
     typeset storageClassName="${1:?}"; (($#)) && shift
 
@@ -301,29 +301,7 @@ MapTestsForComponentReadiness() {
     true
 }
 
-PatchAdminAcksForUpgrade() {
-    # Spoke cluster: KUBECONFIG is managed-cluster-kubeconfig when CNV_TESTS_UPGRADE_ONLY=true.
-    typeset upgradeableMsg ackKey=''
-    upgradeableMsg="$(oc get clusterversion version -o jsonpath='{.status.conditions[?(@.type=="Upgradeable")].message}')"
-    if [[ -n "${upgradeableMsg}" ]]; then
-        # grep exits 1 when no ack-* token is present; must not trip set -e before the skip branch.
-        ackKey="$(grep -oE 'ack-[a-zA-Z0-9.-]+' <<<"${upgradeableMsg}" | head -1 || true)"
-    fi
-    if [[ -n "${ackKey}" ]]; then
-        : "Patching admin-ack '${ackKey}' from Upgradeable condition"
-        oc patch configmap admin-acks-upgrades -n openshift-config \
-            --type merge \
-            -p "$(jq -cn --arg k "${ackKey}" '{data: {($k): "true"}}')" \
-            || : "admin-acks-upgrades patch skipped (ConfigMap may not exist on this cluster)"
-    else
-        : "No admin-ack key in Upgradeable condition; skipping patch"
-    fi
-    true
-}
-
 InstallAndVerifyVirtctl() {
-    [[ "${CNV_TESTS_UPGRADE_ONLY}" != "true" ]] && return
-
     typeset baseURL
     if ! baseURL="$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}' | tr -d '\n\r')"; then
         exit 1
@@ -348,146 +326,40 @@ InstallAndVerifyVirtctl() {
     true
 }
 
-# Hub kubeconfig from acm-fetch-managed-clusters (${SHARED_DIR}/kubeconfig).
-Cnv__HubKubeconfigPath() {
-    typeset hubKubeconfig="${CNV_ACM_HUB_KUBECONFIG:-${SHARED_DIR}/kubeconfig}"
-    if [[ ! -f "${hubKubeconfig}" ]]; then
-        : "Hub kubeconfig not found: ${hubKubeconfig} (expected from acm-fetch-managed-clusters)"
-        return 1
+BuildCnvUpgradePytestArgs() {
+    typeset -a args=(
+        --upgrade=cnv
+        --cnv-version "${CNV_TARGET_VERSION}"
+        --cnv-source "${CNV_SOURCE}"
+        --cnv-channel "${CNV_CHANNEL}"
+        --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization
+        --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/"
+        --ignore=tests/network/
+        --tb=native
+    )
+    if [[ -n "${CNV_TARGET_IMAGE}" ]]; then
+        args+=(--cnv-image "${CNV_TARGET_IMAGE}")
     fi
-    printf '%s' "${hubKubeconfig}"
+    printf '%s\n' "${args[@]}"
 }
 
-Cnv__ResolveAcmManifestWorkNamespace() {
-    typeset ns="${CNV_ACM_MANIFESTWORK_NAMESPACE}"
-    if [[ -z "${ns}" && -f "${SHARED_DIR}/managed-cluster-name" ]]; then
-        ns="$(tr -d '[:space:]' < "${SHARED_DIR}/managed-cluster-name")"
-    fi
-    if [[ -z "${ns}" ]]; then
-        : "CNV_ACM_MANIFESTWORK_NAMESPACE unset and ${SHARED_DIR}/managed-cluster-name missing"
-        return 1
-    fi
-    printf '%s' "${ns}"
-}
-
-# Spoke OCP upgrade via ACM ManifestWork (hub) + klusterlet RBAC on spoke.
-AcmSpokeOcpUpgradeViaManifestWork() {
-    typeset spokeImage="${1:?}"; (($#)) && shift
-    typeset targetOcpVersion="${1:?}"; (($#)) && shift
-    typeset spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
-    typeset hubKubeconfig mwNamespace mwName
-    typeset -r rbacManifest="${ARTIFACT_DIR}/cnv-spoke-clusterversion-rbac.yaml"
-    typeset -r mwManifest="${ARTIFACT_DIR}/cnv-spoke-ocp-upgrade-manifestwork.yaml"
-
-    [[ -f "${spokeKubeconfig}" ]]
-    hubKubeconfig="$(Cnv__HubKubeconfigPath)" || return 1
-    mwNamespace="$(Cnv__ResolveAcmManifestWorkNamespace)" || return 1
-    mwName="${CNV_ACM_MANIFESTWORK_NAME}"
-
-    if [[ -n "${TARGET_CHANNEL:-}" ]]; then
-        : "Patching spoke ClusterVersion channel to ${TARGET_CHANNEL}"
-        oc --kubeconfig="${spokeKubeconfig}" patch clusterversion version --type merge \
-            -p "$(jq -cn --arg ch "${TARGET_CHANNEL}" '{"spec":{"channel":$ch}}')"
-    fi
-
-    cat > "${rbacManifest}" <<'EOF'
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: klusterlet-work-clusterversion
-rules:
-- apiGroups: ["config.openshift.io"]
-  resources: ["clusterversions"]
-  verbs: ["get", "list", "watch", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: klusterlet-work-clusterversion
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: klusterlet-work-clusterversion
-subjects:
-- kind: ServiceAccount
-  name: klusterlet-work-sa
-  namespace: open-cluster-management-agent
-EOF
-    : "Applying klusterlet-work ClusterVersion RBAC on spoke"
-    oc --kubeconfig="${spokeKubeconfig}" apply -f "${rbacManifest}"
-
-    cat > "${mwManifest}" <<EOF
-apiVersion: work.open-cluster-management.io/v1
-kind: ManifestWork
-metadata:
-  name: ${mwName}
-  namespace: ${mwNamespace}
-spec:
-  deleteOption:
-    propagationPolicy: Orphan
-  manifestConfigs:
-  - resourceIdentifier:
-      group: config.openshift.io
-      resource: clusterversions
-      namespace: ""
-      name: version
-    updateStrategy:
-      type: ServerSideApply
-  workload:
-    manifests:
-    - apiVersion: config.openshift.io/v1
-      kind: ClusterVersion
-      metadata:
-        name: version
-      spec:
-        desiredUpdate:
-          force: true
-          image: ${spokeImage}
-EOF
-    : "Applying ManifestWork ${mwName} in namespace ${mwNamespace} on hub"
-    KUBECONFIG="${hubKubeconfig}" oc apply -f "${mwManifest}"
-
-    export KUBECONFIG="${spokeKubeconfig}"
-    WaitSpokeOcpUpgradeCompleted "${targetOcpVersion}"
-    true
-}
-
-WaitSpokeOcpUpgradeCompleted() {
-    typeset targetVersion="${1:?}"; (($#)) && shift
-    typeset -r waitTimeout="${CNV_SPOKE_UPGRADE_WAIT_TIMEOUT}"
-
-    : "Waiting for spoke ClusterVersion ${targetVersion} to reach Completed (${waitTimeout})"
-    oc wait clusterversion/version \
-        --for=jsonpath='{.status.history[0].version}'="${targetVersion}" \
-        --timeout="${waitTimeout}"
-    oc wait clusterversion/version \
-        --for=jsonpath='{.status.history[0].state}'="Completed" \
-        --timeout="${waitTimeout}"
-    true
-}
-
-RunUpgradePytestSplit() {
-    typeset ocpImageByDigest="${1:?}"; (($#)) && shift
+RunCnvUpgradePytestSplit() {
     typeset hcoSubscription="${1:?}"; (($#)) && shift
-    typeset targetOcpVersion="${1:?}"; (($#)) && shift
     typeset -i exitCode=0 phaseExit=0
+    typeset -a cnvUpgradeArgs=()
+    mapfile -t cnvUpgradeArgs < <(BuildCnvUpgradePytestArgs)
     typeset -a pytestCommon=(
         uv --verbose --cache-dir /tmp/uv-cache
         run pytest -o cache_dir=/tmp/pytest-cache
         -s -o log_cli=true
-        --upgrade=ocp
-        --ocp-image "${ocpImageByDigest}"
-        --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization
-        --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/"
         --tc "hco_subscription:${hcoSubscription}"
-        --ignore=tests/network/
-        --tb=native
     )
 
     printf '%s\n' 'phase1_pre_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
 
     : "Phase 1: pre-upgrade virt + storage (*_before_upgrade)"
     "${pytestCommon[@]}" \
+        "${cnvUpgradeArgs[@]}" \
         --junitxml="${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" \
         --pytest-log-file="${ARTIFACT_DIR}/tests_phase_pre_upgrade.log" \
         -k "before_upgrade" \
@@ -498,28 +370,19 @@ RunUpgradePytestSplit() {
     WaitOdfCsiHealthy
 
     if (( exitCode != 0 )); then
-        : "Skipping spoke OCP upgrade and post-upgrade because phase 1 failed (exit ${exitCode})"
+        : "Skipping CNV upgrade and post-upgrade because phase 1 failed (exit ${exitCode})"
         cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
         return "${exitCode}"
     fi
 
-    if [[ "${CNV_SPOKE_UPGRADE_VIA_ACM}" == "true" ]]; then
-        printf '%s\n' 'phase2_acm_manifestwork' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
-        : "Phase 2: spoke OCP upgrade via ACM ManifestWork (not product_upgrade pytest)"
-        AcmSpokeOcpUpgradeViaManifestWork "${ocpImageByDigest}" "${targetOcpVersion}" \
-            || exitCode=$?
-    else
-        printf '%s\n' 'phase2_pytest_product_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
-        : "Phase 2: spoke OCP upgrade via pytest product_upgrade"
-        "${pytestCommon[@]}" \
-            --junitxml="${ARTIFACT_DIR}/junit_phase_ocp_upgrade.xml" \
-            --pytest-log-file="${ARTIFACT_DIR}/tests_phase_ocp_upgrade.log" \
-            tests/install_upgrade_operators/product_upgrade \
-            || exitCode=$?
-        if (( exitCode == 0 )); then
-            WaitSpokeOcpUpgradeCompleted "${targetOcpVersion}"
-        fi
-    fi
+    printf '%s\n' 'phase2_cnv_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
+    : "Phase 2: CNV upgrade only (-m cnv_upgrade, production catalog when CNV_SOURCE=production)"
+    "${pytestCommon[@]}" \
+        "${cnvUpgradeArgs[@]}" \
+        --junitxml="${ARTIFACT_DIR}/junit_phase_cnv_upgrade.xml" \
+        --pytest-log-file="${ARTIFACT_DIR}/tests_phase_cnv_upgrade.log" \
+        -m cnv_upgrade \
+        || exitCode=$?
 
     if (( exitCode != 0 )); then
         cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
@@ -530,13 +393,18 @@ RunUpgradePytestSplit() {
 
     printf '%s\n' 'phase3_post_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
 
-    if [[ "${CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST}" != "true" ]]; then
-        : "Phase 3a: test_ocp_upgrade_process verifies upgrade (pytest-dependency gate for after_upgrade)"
+    if [[ "${CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST}" != "true" ]]; then
+        typeset cnvUpgradeVerifyTest='tests/install_upgrade_operators/product_upgrade/test_upgrade.py::TestUpgrade::test_cnv_upgrade_process'
+        if [[ "${CNV_SOURCE}" == "production" ]]; then
+            cnvUpgradeVerifyTest='tests/install_upgrade_operators/product_upgrade/test_upgrade.py::TestUpgrade::test_production_source_cnv_upgrade_process'
+        fi
+        : "Phase 3a: verify CNV upgrade completed (pytest-dependency gate for after_upgrade)"
         phaseExit=0
         "${pytestCommon[@]}" \
-            --junitxml="${ARTIFACT_DIR}/junit_phase_ocp_upgrade_verify.xml" \
-            --pytest-log-file="${ARTIFACT_DIR}/tests_phase_ocp_upgrade_verify.log" \
-            tests/install_upgrade_operators/product_upgrade/test_upgrade.py::TestUpgrade::test_ocp_upgrade_process \
+            "${cnvUpgradeArgs[@]}" \
+            --junitxml="${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" \
+            --pytest-log-file="${ARTIFACT_DIR}/tests_phase_cnv_upgrade_verify.log" \
+            "${cnvUpgradeVerifyTest}" \
             || phaseExit=$?
         if (( phaseExit != 0 )); then
             exitCode=${phaseExit}
@@ -546,6 +414,7 @@ RunUpgradePytestSplit() {
     if (( exitCode == 0 )); then
         : "Phase 3b: post-upgrade virt + storage (*_after_upgrade)"
         "${pytestCommon[@]}" \
+            "${cnvUpgradeArgs[@]}" \
             --junitxml="${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" \
             --pytest-log-file="${ARTIFACT_DIR}/tests_phase_post_upgrade.log" \
             -k "after_upgrade" \
@@ -556,8 +425,8 @@ RunUpgradePytestSplit() {
 
     if [[ -f "${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" ]]; then
         cp "${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" "${JUNIT_RESULTS_FILE}"
-    elif [[ -f "${ARTIFACT_DIR}/junit_phase_ocp_upgrade_verify.xml" ]]; then
-        cp "${ARTIFACT_DIR}/junit_phase_ocp_upgrade_verify.xml" "${JUNIT_RESULTS_FILE}"
+    elif [[ -f "${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" ]]; then
+        cp "${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" "${JUNIT_RESULTS_FILE}"
     else
         cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
     fi
@@ -565,25 +434,21 @@ RunUpgradePytestSplit() {
     return "${exitCode}"
 }
 
-RunUpgradePytestSingle() {
-    typeset ocpImageByDigest="${1:?}"; (($#)) && shift
+RunCnvUpgradePytestSingle() {
     typeset hcoSubscription="${1:?}"; (($#)) && shift
     typeset -i exitCode=0
+    typeset -a cnvUpgradeArgs=()
+    mapfile -t cnvUpgradeArgs < <(BuildCnvUpgradePytestArgs)
 
-    : "Single pytest run: full upgrade suite including spoke OCP upgrade via product_upgrade tests"
+    : "Single pytest run: full CNV upgrade suite with pre/post validation"
     uv --verbose --cache-dir /tmp/uv-cache \
         run pytest -o cache_dir=/tmp/pytest-cache \
         -s \
         -o log_cli=true \
-        --upgrade=ocp \
-        --ocp-image "${ocpImageByDigest}" \
-        --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
+        "${cnvUpgradeArgs[@]}" \
         --junitxml="${JUNIT_RESULTS_FILE}" \
         --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-        --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
         --tc "hco_subscription:${hcoSubscription}" \
-        --ignore=tests/network/ \
-        --tb=native \
         || exitCode=$?
 
     return "${exitCode}"
@@ -619,16 +484,26 @@ unset KUBERNETES_PORT_443_TCP_PORT
 
 curl -sL "${ocUrl}" | tar -C "${binFolder}" -xzf - oc
 
-if [[ "${CNV_TESTS_UPGRADE_ONLY}" == "true" ]]; then
-    [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
-    export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
+[ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
+export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
+
+if [[ -n "${CNV_TARGET_MAJOR_MINOR:-}" ]]; then
+    typeset resolvedCnvVersion
+    resolvedCnvVersion="$(ResolveCnvLatestVersion "${CNV_TARGET_MAJOR_MINOR}" "${CNV_CHANNEL}")"
+    [[ -n "${resolvedCnvVersion}" ]] || {
+        echo "[ERROR] No kubevirt-hyperconverged version for ${CNV_TARGET_MAJOR_MINOR} on channel ${CNV_CHANNEL}" >&2
+        exit 1
+    }
+    export CNV_TARGET_VERSION="${resolvedCnvVersion}"
+    printf '%s\n' "${CNV_TARGET_VERSION}" > "${ARTIFACT_DIR}/cnv-target-version"
+    : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} from packagemanifest/${CNV_CHANNEL}"
 fi
 
 oc whoami --show-console
 typeset hcoSubscription
 hcoSubscription="$(oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}')"
 
-: "CNV upgrade debug step: spoke kubeconfig; split mode uses ACM ManifestWork for spoke OCP upgrade by default"
+: "CNV upgrade step on spoke: target ${CNV_TARGET_VERSION} via ${CNV_SOURCE}/${CNV_CHANNEL}"
 oc get sc
 SetDefaultStorageClassForCnv "${CNV_TARGET_STORAGE_CLASS}"
 ConfigureOdfVolumeSnapshotClass
@@ -644,44 +519,10 @@ WaitOdfCsiHealthy
 
 typeset -i exitCode=0
 
-if [[ "${CNV_TESTS_UPGRADE_ONLY}" == "true" ]]; then
-    typeset releaseInfoJson imgRepo upgVersion upgImgDigest
-    releaseInfoJson="$(oc adm release info "${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE}" -o json)"
-    upgVersion="$(jq -r '.metadata.version' <<<"${releaseInfoJson}")"
-    upgImgDigest="$(jq -r '.digest'          <<<"${releaseInfoJson}")"
-    [[ -n "${upgVersion}" ]]
-    [[ -n "${upgImgDigest}" ]]
-    imgRepo="${OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE%:*}"
-    imgRepo="${imgRepo%@sha256*}"
-    typeset ocpImageByDigest="${imgRepo}:${upgVersion}@${upgImgDigest}"
-
-    PatchAdminAcksForUpgrade
-
-    if [[ "${CNV_UPGRADE_PYTEST_SPLIT}" == "true" ]]; then
-        RunUpgradePytestSplit "${ocpImageByDigest}" "${hcoSubscription}" "${upgVersion}" \
-            || exitCode=$?
-    else
-        RunUpgradePytestSingle "${ocpImageByDigest}" "${hcoSubscription}" || exitCode=$?
-    fi
+if [[ "${CNV_UPGRADE_PYTEST_SPLIT}" == "true" ]]; then
+    RunCnvUpgradePytestSplit "${hcoSubscription}" || exitCode=$?
 else
-    uv --verbose --cache-dir /tmp/uv-cache \
-        run pytest -o cache_dir=/tmp/pytest-cache \
-        -s \
-        -o log_cli=true \
-        --pytest-log-file="${ARTIFACT_DIR}/tests.log" \
-        --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/" \
-        --junitxml "${JUNIT_RESULTS_FILE}" \
-        --html="${HTML_RESULTS_FILE}" --self-contained-html \
-        --tc-file=tests/global_config.py \
-        --tb=native \
-        --tc default_storage_class:ocs-storagecluster-ceph-rbd-virtualization \
-        --tc default_volume_mode:Block \
-        --tc "hco_subscription:${hcoSubscription}" \
-        --latest-rhel \
-        --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization \
-        --leftovers-collector \
-        -m smoke \
-        || exitCode=$?
+    RunCnvUpgradePytestSingle "${hcoSubscription}" || exitCode=$?
 fi
 
 MapTestsForComponentReadiness "${JUNIT_RESULTS_FILE}"

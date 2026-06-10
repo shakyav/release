@@ -12,6 +12,26 @@ ref:
     When ODF_DEFAULT_STORAGE_CLASS is the virt SC, waits for KubeVirt CRD and virt StorageClass after
     policy apply, sets cluster/kubevirt defaults and VolumeSnapshotClass before HyperConverged Available.
   env:
+  - name: CNV_POLICY_INSTALL_MAJOR_MINOR
+    documentation: |-
+      When set (e.g. "4.20"), resolves the latest available patch version and matching
+      kubevirt-hyperconverged CSV from the spoke catalog on CNV_POLICY_CHANNEL, pins OperatorPolicy subscription.startingCSV and versions, and sets upgradeApproval to None
+      so CNV is not auto-upgraded until a downstream CNV upgrade test step runs.
+    default: ""
+  - name: CNV_POLICY_CHANNEL
+    documentation: OLM channel for CNV OperatorPolicy subscription (and CSV lookup when pinning).
+    default: "stable"
+  - name: CNV_POLICY_SOURCE
+    documentation: Catalog source for CNV OperatorPolicy subscription.
+    default: "redhat-operators"
+  - name: CNV_POLICY_SOURCE_NAMESPACE
+    documentation: Catalog source namespace for CNV OperatorPolicy subscription.
+    default: "openshift-marketplace"
+  - name: CNV_POLICY_UPGRADE_APPROVAL
+    documentation: |-
+      OperatorPolicy upgradeApproval (Automatic, Manual, or None). Defaults to None when
+      CNV_POLICY_INSTALL_MAJOR_MINOR is set; otherwise Automatic.
+    default: ""
   - name: ODF_DEFAULT_STORAGE_CLASS
     documentation: |-
       When set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization, this step waits for the virt
