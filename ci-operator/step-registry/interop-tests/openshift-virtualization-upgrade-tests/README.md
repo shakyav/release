@@ -1,95 +1,64 @@
-# interop-tests-openshift-virtualization-upgrade-tests (debug)
+# interop-tests-openshift-virtualization-upgrade-tests
 
-Experimental step for **CNV OCP upgrade on the ACM spoke**. It mirrors
-`interop-tests-openshift-virtualization-tests` but adds fixes for ODF RBD CSI stale
-locks and VolumeSnapshot cleanup issues seen in ACM/CNV P2P jobs.
+CNV **upgrade-only** tests on the ACM **spoke** cluster. Follows
+[INSTALL_AND_UPGRADE.md](https://github.com/RedHatQE/openshift-virtualization-tests/blob/main/docs/INSTALL_AND_UPGRADE.md)
+(`--upgrade cnv`).
 
-**Do not use for production gating** until validated and merged into the main step.
+Spoke **OCP** upgrade is **not** performed here — use `acm-interop-p2p-spoke-upgrade` before this step.
 
-## Spoke vs hub OCP upgrade
+## Default upgrade path
 
-| Step | Cluster | OCP upgrade |
-|------|---------|-------------|
-| `acm-interop-p2p-cluster-upgrade` | **Hub** (job kubeconfig) | Hub only |
-| This step (`CNV_UPGRADE_PYTEST_SPLIT=true`) | **Spoke** (`managed-cluster-kubeconfig`) | ACM **ManifestWork** (default) or pytest `product_upgrade` |
+| From | To | Catalog |
+|------|-----|---------|
+| CNV 4.20 (installed by p2p-acm-cnv-install-policy on stable) | CNV 4.21.0 GA | `CNV_SOURCE=production`, `CNV_CHANNEL=stable` |
 
-Requires `${SHARED_DIR}/managed-cluster-name` (from `acm-interop-p2p-cluster-install`) and `${SHARED_DIR}/kubeconfig` (from `acm-fetch-managed-clusters`) for ManifestWork on the hub.
+All pytest invocations pass `--ignore=tests/network/` (interop clusters are not multi-NIC).
 
 ## Three-phase pytest split (default)
 
-When `CNV_UPGRADE_PYTEST_SPLIT=true` and `CNV_SPOKE_UPGRADE_VIA_ACM=true`:
+When `CNV_UPGRADE_PYTEST_SPLIT=true`:
 
 | Phase | What |
 |-------|------|
 | **1 — Pre-upgrade** | `pytest -k before_upgrade` on `tests/virt/upgrade` + `tests/storage/upgrade` |
-| **2 — Spoke OCP** | ACM ManifestWork + klusterlet RBAC (not full `product_upgrade` suite) |
-| **3 — Post-upgrade** | `test_ocp_upgrade_process` (dependency gate), then `pytest -k after_upgrade` |
+| **2 — CNV upgrade** | `pytest -m cnv_upgrade --upgrade cnv --cnv-version … --cnv-source production` |
+| **3 — Post-upgrade** | `test_cnv_upgrade_process` (dependency gate), then `pytest -k after_upgrade` |
 
 Between phases: `WaitOdfCsiHealthy` (CSI flush).
 
-Artifact: `${ARTIFACT_DIR}/cnv-upgrade-phase.txt` (`phase1_pre_upgrade`, `phase2_acm_manifestwork`, `phase3_post_upgrade`).
+Artifact: `${ARTIFACT_DIR}/cnv-upgrade-phase.txt`.
 
-### Phase 2 — ACM ManifestWork (default)
+## Typical workflow placement
 
-1. Use hub kubeconfig `${SHARED_DIR}/kubeconfig` (written by `acm-fetch-managed-clusters`).
-2. Optional: patch spoke `ClusterVersion` channel if `TARGET_CHANNEL` is set.
-3. On **spoke** (`managed-cluster-kubeconfig`): apply `klusterlet-work-clusterversion` ClusterRole/Binding.
-4. On **hub**: apply `ManifestWork` in namespace `${managed-cluster-name}` with `spec.desiredUpdate.image` = `--ocp-image` value.
-5. On **spoke**: `WaitSpokeOcpUpgradeCompleted`.
-
-Redacted copies: `cnv-spoke-clusterversion-rbac.yaml`, `cnv-spoke-ocp-upgrade-manifestwork.yaml`.
-
-Set `CNV_SPOKE_UPGRADE_VIA_ACM=false` to use pytest `tests/install_upgrade_operators/product_upgrade` for phase 2 instead (legacy).
-
-### Phase 3 — pytest-dependency
-
-Post-upgrade tests depend on `test_ocp_upgrade_process` completing. Phase 3a runs that test only (verifies upgrade after ACM); phase 3b runs `-k after_upgrade`.
-
-Set `CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST=true` only if you accept post tests being skipped by pytest-dependency.
-
-## Boot images (wait-only)
-
-HCO common boot images in `openshift-virtualization-os-images` must be `UpToDate` before pytest.
-This step does **not** tear down/reimport boot-image DataVolumes.
-
-Set `ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization` on
-`interop-tests-deploy-odf` (before `p2p-acm-cnv-install-policy`) so imports land on the virt SC.
-Artifact: `${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt` (`wait_only`).
+```yaml
+test:
+- ref: acm-interop-p2p-cluster-upgrade      # hub OCP
+- ref: acm-interop-p2p-spoke-upgrade        # spoke OCP via ACM ManifestWork
+- ref: interop-tests-openshift-virtualization-upgrade-tests  # CNV 4.20 -> 4.21 GA
+env:
+  CNV_TARGET_VERSION: "4.21.0"
+  CNV_SOURCE: "production"
+  CNV_CHANNEL: "stable"
+```
 
 ## Env vars (ref.yaml)
 
 | Name | Default | Purpose |
 |------|---------|---------|
 | `CNV_UPGRADE_PYTEST_SPLIT` | `true` | Enable 3-phase flow |
-| `CNV_SPOKE_UPGRADE_VIA_ACM` | `true` | Phase 2 via ManifestWork |
-| `CNV_ACM_MANIFESTWORK_NAME` | `spoke-ocp-upgrade` | ManifestWork metadata.name |
-| `CNV_ACM_MANIFESTWORK_NAMESPACE` | *(empty)* | Hub namespace; defaults to `managed-cluster-name` file |
-| `CNV_ACM_HUB_KUBECONFIG` | *(empty)* | Hub kubeconfig; defaults to `${SHARED_DIR}/kubeconfig` |
-| `CNV_SKIP_PYTEST_OCP_UPGRADE_DEPENDENCY_TEST` | `false` | Skip phase-3a dependency test |
-| `TARGET_CHANNEL` | *(empty)* | Spoke channel patch before upgrade |
-| `CNV_SPOKE_UPGRADE_WAIT_TIMEOUT` | `3h` | Spoke `ClusterVersion` wait |
+| `CNV_TARGET_VERSION` | `4.21.0` | `--cnv-version` target |
+| `CNV_TARGET_IMAGE` | *(empty)* | Optional `--cnv-image`; omit for production GA |
+| `CNV_SOURCE` | `production` | `--cnv-source` |
+| `CNV_CHANNEL` | `stable` | `--cnv-channel` |
+| `CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST` | `false` | Skip phase-3a dependency test |
 | `CNV_TARGET_STORAGE_CLASS` | `ocs-storagecluster-ceph-rbd-virtualization` | Boot images + pytest SC |
-
-## How to run in CI
-
-```yaml
-- ref: interop-tests-openshift-virtualization-upgrade-tests
-env:
-  TARGET_CHANNEL: "candidate-4.22"  # optional, for spoke channel patch
-```
-
-`CNV_UPGRADE_PYTEST_SPLIT=false` runs a single pytest with full `--upgrade=ocp` collection (includes in-pytest OCP upgrade).
 
 ## Artifacts
 
 | File | Content |
 |------|---------|
-| `cnv-spoke-clusterversion-rbac.yaml` | Spoke RBAC applied |
-| `cnv-spoke-ocp-upgrade-manifestwork.yaml` | ManifestWork spec (image only, no secrets) |
+| `cnv-boot-image-prep-mode.txt` | Boot image prep mode (`wait_only`) |
 | `junit_phase_pre_upgrade.xml` | Phase 1 |
-| `junit_phase_ocp_upgrade_verify.xml` | Phase 3a |
+| `junit_phase_cnv_upgrade.xml` | Phase 2 |
+| `junit_phase_cnv_upgrade_verify.xml` | Phase 3a |
 | `junit_phase_post_upgrade.xml` | Phase 3b (reporting copy → `junit_results.xml`) |
-
-## Promotion
-
-After a green debug run, port into `interop-tests-openshift-virtualization-tests-commands.sh` and retire this step.

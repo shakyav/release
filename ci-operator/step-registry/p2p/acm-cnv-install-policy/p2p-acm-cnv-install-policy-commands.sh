@@ -243,6 +243,42 @@ WaitForCNV() {
 typeset -a clusterNamesArr=()
 mapfile -t clusterNamesArr < <(LoadSpokeClusterNames)
 
+# Resolve latest kubevirt-hyperconverged version for major.minor from the spoke catalog.
+ResolveCnvLatestVersion() {
+    local majorMinor="$1"
+    local channel="$2"
+    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
+    local versionPrefix="${majorMinor}."
+
+    oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
+        -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .version' \
+        | sort -V | tail -n1
+}
+
+# Resolve latest kubevirt-hyperconverged CSV for major.minor from the spoke catalog.
+ResolveCnvStartingCsv() {
+    local majorMinor="$1"
+    local channel="$2"
+    local spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
+    local versionPrefix="${majorMinor}."
+
+    oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
+        -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .name' \
+        | sort -V | tail -n1
+}
+
 #=====================
 # ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
 #=====================
