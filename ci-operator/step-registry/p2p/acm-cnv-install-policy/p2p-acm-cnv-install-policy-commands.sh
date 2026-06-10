@@ -49,22 +49,40 @@ ResolveCnvLatestVersion() {
         | sort -V | tail -n1
 }
 
-# Resolve latest kubevirt-hyperconverged CSV for major.minor from the spoke catalog.
-ResolveCnvStartingCsv() {
-    local majorMinor="$1"
+# Resolve packagemanifest CSV name for an exact x.y.z version on the spoke catalog channel.
+ResolveCnvCsvForVersion() {
+    local version="$1"
     local channel="$2"
-    local spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
-    local versionPrefix="${majorMinor}."
+    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
 
     oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
         -n openshift-marketplace -o json \
-        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+        | jq -r --arg ch "${channel}" --arg ver "${version}" '
             .status.channels[]
             | select(.name == $ch)
             | .entries[]
-            | select(.version | startswith($prefix))
+            | select(.version == $ver)
             | .name' \
-        | sort -V | tail -n1
+        | head -n1
+}
+
+# Installed CNV CSV on the spoke: subscription by package name, else Succeeded CSV with HCO label.
+GetInstalledCnvCsv() {
+    typeset csv
+    csv="$(oc get subscription.operators.coreos.com -n openshift-cnv -o json \
+        | jq -r '.items[] | select(.spec.name=="kubevirt-hyperconverged") | .status.installedCSV' \
+        | grep -v '^$' | head -n1 || true)"
+    if [[ -n "${csv}" ]]; then
+        printf '%s' "${csv}"
+        return 0
+    fi
+    oc get csv -n openshift-cnv -o json \
+        | jq -r '
+            .items[]
+            | select(.metadata.labels["operators.coreos.com/kubevirt-hyperconverged.openshift-cnv"] != null)
+            | select(.status.phase == "Succeeded")
+            | .metadata.name' \
+        | head -n1
 }
 
 #=====================
@@ -128,19 +146,19 @@ typeset cnvPolicySource="${CNV_POLICY_SOURCE:-redhat-operators}"
 typeset cnvPolicySourceNs="${CNV_POLICY_SOURCE_NAMESPACE:-openshift-marketplace}"
 typeset cnvUpgradeApproval="${CNV_POLICY_UPGRADE_APPROVAL:-Automatic}"
 typeset cnvStartingCsv=""
+typeset cnvStartingVersion=""
 typeset cnvStartingCsvLine=""
 typeset cnvVersionsYaml=""
 
 if [[ -n "${CNV_POLICY_INSTALL_MAJOR_MINOR:-}" ]]; then
-    cnvStartingCsv="$(ResolveCnvStartingCsv "${CNV_POLICY_INSTALL_MAJOR_MINOR}" "${cnvPolicyChannel}")"
-    [[ -n "${cnvStartingCsv}" ]] || {
-        echo "[ERROR] No kubevirt-hyperconverged CSV found for ${CNV_POLICY_INSTALL_MAJOR_MINOR} on channel ${cnvPolicyChannel}" >&2
-        exit 1
-    }
-    typeset cnvStartingVersion
     cnvStartingVersion="$(ResolveCnvLatestVersion "${CNV_POLICY_INSTALL_MAJOR_MINOR}" "${cnvPolicyChannel}")"
     [[ -n "${cnvStartingVersion}" ]] || {
         echo "[ERROR] No kubevirt-hyperconverged version found for ${CNV_POLICY_INSTALL_MAJOR_MINOR} on channel ${cnvPolicyChannel}" >&2
+        exit 1
+    }
+    cnvStartingCsv="$(ResolveCnvCsvForVersion "${cnvStartingVersion}" "${cnvPolicyChannel}")"
+    [[ -n "${cnvStartingCsv}" ]] || {
+        echo "[ERROR] No kubevirt-hyperconverged CSV found for version ${cnvStartingVersion} on channel ${cnvPolicyChannel}" >&2
         exit 1
     }
     cnvUpgradeApproval="${CNV_POLICY_UPGRADE_APPROVAL:-None}"
@@ -400,15 +418,20 @@ while true; do
 done
 
 if [[ -n "${cnvStartingCsv}" ]]; then
-    typeset installedCsv
-    installedCsv="$(oc get subscription kubevirt-hyperconverged -n openshift-cnv \
-        -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
-    if [[ "${installedCsv}" != "${cnvStartingCsv}" ]]; then
-        echo "[ERROR] Expected CNV CSV ${cnvStartingCsv}, got ${installedCsv:-<none>}" >&2
+    typeset installedCsv installedVersion
+    installedCsv="$(GetInstalledCnvCsv)"
+    installedVersion=""
+    if [[ -n "${installedCsv}" ]]; then
+        installedVersion="$(oc get csv "${installedCsv}" -n openshift-cnv \
+            -o jsonpath='{.spec.version}' 2>/dev/null || true)"
+    fi
+    if [[ "${installedVersion}" != "${cnvStartingVersion}" ]]; then
+        echo "[ERROR] Expected CNV version ${cnvStartingVersion} (csv ${cnvStartingCsv}), got ${installedVersion:-<none>} (csv ${installedCsv:-<none>})" >&2
+        oc get subscription -n openshift-cnv -o wide > "${ARTIFACT_DIR}/cnv-subscriptions.txt" || true
         oc get csv -n openshift-cnv > "${ARTIFACT_DIR}/cnv-csv-list.txt" || true
         exit 1
     fi
-    echo "[INFO] CNV pinned at ${installedCsv}; auto-upgrade disabled until CNV upgrade tests"
+    echo "[INFO] CNV pinned at ${installedCsv} (${installedVersion}); auto-upgrade disabled until CNV upgrade tests"
 fi
 
 echo "[INFO] CNV installation via policy completed successfully"
