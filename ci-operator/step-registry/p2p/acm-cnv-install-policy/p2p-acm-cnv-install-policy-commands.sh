@@ -261,22 +261,40 @@ ResolveCnvLatestVersion() {
         | sort -V | tail -n1
 }
 
-# Resolve latest kubevirt-hyperconverged CSV for major.minor from the spoke catalog.
-ResolveCnvStartingCsv() {
-    local majorMinor="$1"
+# Resolve packagemanifest CSV name for an exact x.y.z version on the spoke catalog channel.
+ResolveCnvCsvForVersion() {
+    local version="$1"
     local channel="$2"
-    local spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
-    local versionPrefix="${majorMinor}."
+    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
 
     oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
         -n openshift-marketplace -o json \
-        | jq -r --arg ch "${channel}" --arg prefix "${versionPrefix}" '
+        | jq -r --arg ch "${channel}" --arg ver "${version}" '
             .status.channels[]
             | select(.name == $ch)
             | .entries[]
-            | select(.version | startswith($prefix))
+            | select(.version == $ver)
             | .name' \
-        | sort -V | tail -n1
+        | head -n1
+}
+
+# Installed CNV CSV on the spoke: subscription by package name, else Succeeded CSV with HCO label.
+GetInstalledCnvCsv() {
+    typeset csv
+    csv="$(oc get subscription.operators.coreos.com -n openshift-cnv -o json \
+        | jq -r '.items[] | select(.spec.name=="kubevirt-hyperconverged") | .status.installedCSV' \
+        | grep -v '^$' | head -n1 || true)"
+    if [[ -n "${csv}" ]]; then
+        printf '%s' "${csv}"
+        return 0
+    fi
+    oc get csv -n openshift-cnv -o json \
+        | jq -r '
+            .items[]
+            | select(.metadata.labels["operators.coreos.com/kubevirt-hyperconverged.openshift-cnv"] != null)
+            | select(.status.phase == "Succeeded")
+            | .metadata.name' \
+        | head -n1
 }
 
 #=====================
