@@ -53,8 +53,8 @@ PatchAdminAcksForUpgrade() {
 
 ApplySpokeClusterVersionRbac() {
     typeset kubeconfig="$1"
-    typeset rbacManifest="$2"
-    cat > "${rbacManifest}" <<'EOF'
+    typeset manifestFile="$2"
+    cat > "${manifestFile}" <<'EOF'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -78,14 +78,14 @@ subjects:
   namespace: open-cluster-management-agent
 EOF
     : "Applying klusterlet-work ClusterVersion RBAC on spoke"
-    oc --kubeconfig="${kubeconfig}" apply -f "${rbacManifest}"
+    oc --kubeconfig="${kubeconfig}" apply -f "${manifestFile}"
 }
 
 ApplySpokeUpgradeManifestWork() {
     typeset mwNamespace="$1"
     typeset mwName="$2"
-    typeset mwManifest="$3"
-    cat > "${mwManifest}" <<EOF
+    typeset manifestFile="$3"
+    cat > "${manifestFile}" <<EOF
 apiVersion: work.open-cluster-management.io/v1
 kind: ManifestWork
 metadata:
@@ -114,7 +114,7 @@ spec:
           image: ${spokeImage}
 EOF
     : "Applying ManifestWork ${mwName} in namespace ${mwNamespace} on hub"
-    KUBECONFIG="${hubKubeconfig}" oc apply -f "${mwManifest}"
+    KUBECONFIG="${hubKubeconfig}" oc apply -f "${manifestFile}"
 }
 
 WaitSpokeUpgradeCompleted() {
