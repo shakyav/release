@@ -30,6 +30,11 @@ ref:
   - name: BW_PATH
     default: "/bw"
     documentation: Bitwarden folder
+  - name: CNV_VERSION_EXPLORER_URL
+    default: ""
+    documentation: |-
+      Base URL for the CNV Version Explorer API (required by pytest --upgrade cnv). When empty,
+      resolved from ${BW_PATH}/cnv-version-explorer-url or Bitwarden Secrets Manager (bws) at runtime.
   - name: OCP_VERSION
     default: "4.13"
     documentation: OpenShift Version (used for must-gather fallback image tag)
@@ -51,15 +56,6 @@ ref:
   - name: MAP_TESTS
     default: "false"
     documentation: Specify whether to update the test suite name for reporting tools
-  - name: CNV_UPGRADE_PYTEST_SPLIT
-    default: "true"
-    documentation: |-
-      When true, run three phases: pre-upgrade pytest (-k before_upgrade), CNV upgrade
-      (-m cnv_upgrade), post-upgrade pytest (-k after_upgrade).
-  - name: CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST
-    default: "false"
-    documentation: |-
-      When true, skip phase-3a test_cnv_upgrade_process (post-upgrade tests may be skipped by pytest-dependency).
   - name: CNV_TARGET_MAJOR_MINOR
     default: "4.21"
     documentation: |-
