@@ -128,6 +128,106 @@ WaitSpokeUpgradeCompleted() {
         --timeout="${ACM_SPOKE_UPGRADE_TIMEOUT}"
 }
 
+WaitSpokeMachineConfigPoolsReady() {
+    typeset kubeconfig="$1"
+    typeset -r mcpArtifact="${ARTIFACT_DIR}/spoke-${spokeName}-machineconfigpools.txt"
+    typeset -i pollInterval=30
+    typeset -i stablePassesRequired="${ACM_SPOKE_MCP_STABLE_PASSES:-10}"
+
+    : "Waiting for spoke MachineConfigPools (${ACM_SPOKE_MCP_READY_TIMEOUT}, ${stablePassesRequired} consecutive passes)"
+    if ! SPOKE_KUBECONFIG="${kubeconfig}" \
+        STABLE_PASSES="${stablePassesRequired}" \
+        POLL_INTERVAL="${pollInterval}" \
+        timeout "${ACM_SPOKE_MCP_READY_TIMEOUT}" \
+        bash <<'EOS'
+set -uo pipefail
+successCount=0
+degradedStreak=0
+tmpOutput="$(mktemp)"
+trap 'rm -f "${tmpOutput}"' EXIT
+while (( successCount < STABLE_PASSES )); do
+    ret=0
+    updatingMcp=''
+    unhealthyMcp=''
+    if ! oc --kubeconfig="${SPOKE_KUBECONFIG}" get machineconfigpools \
+        -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status' \
+        --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
+        ret=1
+    else
+        updatingMcp="$(grep -v False "${tmpOutput}" || true)"
+        if [[ -n "${updatingMcp}" ]]; then
+            ret=1
+        elif ! oc --kubeconfig="${SPOKE_KUBECONFIG}" get machineconfigpools \
+            -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
+            --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
+            ret=1
+        else
+            unhealthyMcp="$(grep -v 'False.*False.*0' "${tmpOutput}" || true)"
+            if [[ -n "${unhealthyMcp}" ]]; then
+                ret=2
+            fi
+        fi
+    fi
+    if (( ret == 0 )); then
+        degradedStreak=0
+        (( successCount += 1 ))
+    elif (( ret == 1 )); then
+        successCount=0
+        degradedStreak=0
+    else
+        successCount=0
+        (( degradedStreak += 1 ))
+        if (( degradedStreak >= 5 )); then
+            exit 1
+        fi
+    fi
+    sleep "${POLL_INTERVAL}"
+done
+EOS
+    then
+        oc --kubeconfig="${kubeconfig}" get machineconfigpools > "${mcpArtifact}" || true
+        return 1
+    fi
+    oc --kubeconfig="${kubeconfig}" get machineconfigpools > "${mcpArtifact}"
+    true
+}
+
+WaitSpokeClusterOperatorsReady() {
+    typeset kubeconfig="$1"
+    typeset -r coArtifact="${ARTIFACT_DIR}/spoke-${spokeName}-clusteroperators.txt"
+
+    : "Waiting for spoke cluster operators (${ACM_SPOKE_CO_READY_TIMEOUT})"
+    if ! KUBECONFIG="${kubeconfig}" timeout "${ACM_SPOKE_CO_READY_TIMEOUT}" bash -c '
+        until
+            oc wait clusteroperators --all --for=condition=Available=True --timeout=30s &&
+            oc wait clusteroperators --all --for=condition=Progressing=False --timeout=30s &&
+            oc wait clusteroperators --all --for=condition=Degraded=False --timeout=30s
+        do
+            sleep 30
+        done
+    '; then
+        oc --kubeconfig="${kubeconfig}" get co > "${coArtifact}" || true
+        return 1
+    fi
+    oc --kubeconfig="${kubeconfig}" get co > "${coArtifact}"
+    true
+}
+
+WaitSpokeNodesReady() {
+    typeset kubeconfig="$1"
+    typeset -r nodeArtifact="${ARTIFACT_DIR}/spoke-${spokeName}-nodes.txt"
+
+    : "Waiting for all spoke nodes Ready (${ACM_SPOKE_NODE_READY_TIMEOUT})"
+    if ! oc --kubeconfig="${kubeconfig}" wait node --all \
+        --for=condition=Ready \
+        --timeout="${ACM_SPOKE_NODE_READY_TIMEOUT}"; then
+        oc --kubeconfig="${kubeconfig}" get nodes > "${nodeArtifact}" || true
+        return 1
+    fi
+    oc --kubeconfig="${kubeconfig}" get nodes > "${nodeArtifact}"
+    true
+}
+
 typeset -r rbacManifest="${ARTIFACT_DIR}/spoke-${spokeName}-clusterversion-rbac.yaml"
 typeset -r mwManifest="${ARTIFACT_DIR}/spoke-${spokeName}-ocp-upgrade-manifestwork.yaml"
 
@@ -143,5 +243,8 @@ PatchAdminAcksForUpgrade "${spokeKubeconfig}"
 ApplySpokeClusterVersionRbac "${spokeKubeconfig}" "${rbacManifest}"
 ApplySpokeUpgradeManifestWork "${spokeName}" "${ACM_MANIFESTWORK_NAME}" "${mwManifest}"
 WaitSpokeUpgradeCompleted "${spokeKubeconfig}"
+WaitSpokeMachineConfigPoolsReady "${spokeKubeconfig}"
+WaitSpokeClusterOperatorsReady "${spokeKubeconfig}"
+WaitSpokeNodesReady "${spokeKubeconfig}"
 
 true
