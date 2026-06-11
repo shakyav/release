@@ -14,19 +14,10 @@ Spoke **OCP** upgrade is **not** performed here — use `acm-interop-p2p-spoke-u
 
 All pytest invocations pass `--ignore=tests/network/` (interop clusters are not multi-NIC).
 
-## Three-phase pytest split (default)
+## Pytest invocation
 
-When `CNV_UPGRADE_PYTEST_SPLIT=true`:
-
-| Phase | What |
-|-------|------|
-| **1 — Pre-upgrade** | `pytest -k before_upgrade` on `tests/virt/upgrade` + `tests/storage/upgrade` |
-| **2 — CNV upgrade** | `pytest -m cnv_upgrade --upgrade cnv --cnv-version … --cnv-source production` |
-| **3 — Post-upgrade** | `test_cnv_upgrade_process` (dependency gate), then `pytest -k after_upgrade` |
-
-Between phases: `WaitOdfCsiHealthy` (CSI flush).
-
-Artifact: `${ARTIFACT_DIR}/cnv-upgrade-phase.txt`.
+One `pytest --upgrade cnv` run with pre/post upgrade validation (full upgrade suite per
+`INSTALL_AND_UPGRADE.md`).
 
 ## Typical workflow placement
 
@@ -45,20 +36,32 @@ env:
 
 | Name | Default | Purpose |
 |------|---------|---------|
-| `CNV_UPGRADE_PYTEST_SPLIT` | `true` | Enable 3-phase flow |
+| `CNV_VERSION_EXPLORER_URL` | *(empty)* | CNV Version Explorer API base URL for `--upgrade cnv`. Auto-resolved when empty (see below). |
 | `CNV_TARGET_VERSION` | `4.21.0` | `--cnv-version` target |
 | `CNV_TARGET_IMAGE` | *(empty)* | Optional `--cnv-image`; omit for production GA |
 | `CNV_SOURCE` | `production` | `--cnv-source` |
 | `CNV_CHANNEL` | `stable` | `--cnv-channel` |
-| `CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST` | `false` | Skip phase-3a dependency test |
 | `CNV_TARGET_STORAGE_CLASS` | `ocs-storagecluster-ceph-rbd-virtualization` | Boot images + pytest SC |
+
+### `CNV_VERSION_EXPLORER_URL` resolution
+
+Required by `openshift-virtualization-tests` for `--upgrade cnv`. When not set in job/step `env:`,
+the step resolves it in order:
+
+1. **`CNV_VERSION_EXPLORER_URL`** environment variable (explicit override)
+2. **`${BW_PATH}/cnv-version-explorer-url`** — file in `openshift-virtualization-tests-credentials`
+3. **Bitwarden Secrets Manager** — `bws secret list/get` for `cnv_version_explorer_url`,
+   `CNV_VERSION_EXPLORER_URL`, or `default_cnv_version_explorer_url`
+
+Diagnostics (availability only — no URLs or secret values): `${ARTIFACT_DIR}/cnv-version-explorer-url-check.txt` and
+`cnv-version-explorer-url-source.txt`. CI logs use the same availability-only messages via `:` (no secret values).
 
 ## Artifacts
 
 | File | Content |
 |------|---------|
 | `cnv-boot-image-prep-mode.txt` | Boot image prep mode (`wait_only`) |
-| `junit_phase_pre_upgrade.xml` | Phase 1 |
-| `junit_phase_cnv_upgrade.xml` | Phase 2 |
-| `junit_phase_cnv_upgrade_verify.xml` | Phase 3a |
-| `junit_phase_post_upgrade.xml` | Phase 3b (reporting copy → `junit_results.xml`) |
+| `junit_results.xml` | Full upgrade suite JUnit output |
+| `tests.log` | Pytest log |
+| `cnv-version-explorer-url-check.txt` | Which URL sources were checked (env / mount / Bitwarden) |
+| `cnv-version-explorer-url-source.txt` | Winning source (`environment`, `credentials-mount`, or `bitwarden:<name>`) |

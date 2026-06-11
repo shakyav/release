@@ -24,6 +24,103 @@ ResolveCnvLatestVersion() {
         | sort -V | tail -n1
 }
 
+# Resolve CNV_VERSION_EXPLORER_URL required by pytest --upgrade cnv.
+# Order: existing env -> ${BW_PATH}/cnv-version-explorer-url -> Bitwarden Secrets Manager (bws).
+# Logs and artifacts record availability only — never secret values or URLs.
+ResolveCnvVersionExplorerUrl() {
+    [[ $- == *x* ]] && _resolveUrlWasTracing=true || _resolveUrlWasTracing=false
+    set +x
+
+    typeset checkFile="${ARTIFACT_DIR}/cnv-version-explorer-url-check.txt"
+    typeset sourceFile="${ARTIFACT_DIR}/cnv-version-explorer-url-source.txt"
+    typeset -a bwSecretNames=(
+        cnv_version_explorer_url
+        CNV_VERSION_EXPLORER_URL
+        default_cnv_version_explorer_url
+    )
+    typeset credPath url secretName secretId secretJson secretValue parsedUrl bwListJson
+
+    LogCnvVersionExplorerAvailability() {
+        typeset source="${1:?}" status="${2:?}"
+        printf '%s: %s\n' "${source}" "${status}" >> "${checkFile}"
+        : "CNV Version Explorer URL (${source}): ${status}"
+    }
+
+    : > "${checkFile}"
+
+    if [[ -n "${CNV_VERSION_EXPLORER_URL:-}" ]]; then
+        LogCnvVersionExplorerAvailability environment available
+        printf 'environment\n' > "${sourceFile}"
+        [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
+        return 0
+    fi
+    LogCnvVersionExplorerAvailability environment 'not available'
+
+    credPath="${BW_PATH}/cnv-version-explorer-url"
+    if [[ -r "${credPath}" && -s "${credPath}" ]]; then
+        url="$(head -1 "${credPath}" | tr -d '\r\n')"
+        if [[ -n "${url}" ]]; then
+            export CNV_VERSION_EXPLORER_URL="${url}"
+            unset url
+            LogCnvVersionExplorerAvailability credentials-mount available
+            printf 'credentials-mount\n' > "${sourceFile}"
+            [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
+            return 0
+        fi
+        LogCnvVersionExplorerAvailability credentials-mount 'not available (empty file)'
+    else
+        LogCnvVersionExplorerAvailability credentials-mount 'not available'
+    fi
+
+    if [[ -z "${ACCESS_TOKEN:-}" ]]; then
+        LogCnvVersionExplorerAvailability bitwarden 'not available (ACCESS_TOKEN unset)'
+    elif ! command -v bws >/dev/null 2>&1; then
+        LogCnvVersionExplorerAvailability bitwarden 'not available (bws not in PATH)'
+    elif bwListJson="$(bws secret list 2>/dev/null)" && [[ -n "${bwListJson}" ]]; then
+        LogCnvVersionExplorerAvailability bitwarden 'list available'
+        for secretName in "${bwSecretNames[@]}"; do
+            secretId="$(jq -r --arg n "${secretName}" '[.[] | select(.key == $n) | .id] | first // empty' <<<"${bwListJson}")"
+            if [[ -z "${secretId}" ]]; then
+                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available'
+                continue
+            fi
+            LogCnvVersionExplorerAvailability "bitwarden:${secretName}" available
+            if ! secretJson="$(bws secret get "${secretId}" 2>/dev/null)" || [[ -z "${secretJson}" ]]; then
+                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available (get failed)'
+                unset secretId secretJson
+                continue
+            fi
+            unset secretId
+            secretValue="$(jq -r '.value // empty' <<<"${secretJson}")"
+            unset secretJson
+            parsedUrl=""
+            if [[ -n "${secretValue}" ]] && jq -e . >/dev/null 2>&1 <<<"${secretValue}"; then
+                parsedUrl="$(jq -r '.url // .URL // .server // empty' <<<"${secretValue}")"
+            fi
+            [[ -z "${parsedUrl}" && -n "${secretValue}" ]] && parsedUrl="${secretValue}"
+            unset secretValue
+            if [[ -n "${parsedUrl}" ]]; then
+                export CNV_VERSION_EXPLORER_URL="${parsedUrl}"
+                unset parsedUrl
+                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'available (resolved)'
+                printf 'bitwarden:%s\n' "${secretName}" > "${sourceFile}"
+                [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
+                return 0
+            fi
+            LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available (empty or unparseable value)'
+        done
+        unset bwListJson
+    else
+        LogCnvVersionExplorerAvailability bitwarden 'not available (list failed)'
+    fi
+
+    echo '[ERROR] CNV_VERSION_EXPLORER_URL is required for pytest --upgrade cnv (openshift-virtualization-tests).' >&2
+    echo "[ERROR] Checked environment, credentials mount, and Bitwarden — availability only in ${checkFile}." >&2
+    echo '[ERROR] Obtain the URL from CNV Confluence or CNV QE; add cnv-version-explorer-url to openshift-virtualization-tests-credentials or set the env var in job/step config.' >&2
+    [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
+    return 1
+}
+
 typeset -i startTime=$SECONDS
 
 trap 'DebugOnExit' EXIT
@@ -343,98 +440,7 @@ BuildCnvUpgradePytestArgs() {
     printf '%s\n' "${args[@]}"
 }
 
-RunCnvUpgradePytestSplit() {
-    typeset hcoSubscription="${1:?}"; (($#)) && shift
-    typeset -i exitCode=0 phaseExit=0
-    typeset -a cnvUpgradeArgs=()
-    mapfile -t cnvUpgradeArgs < <(BuildCnvUpgradePytestArgs)
-    typeset -a pytestCommon=(
-        uv --verbose --cache-dir /tmp/uv-cache
-        run pytest -o cache_dir=/tmp/pytest-cache
-        -s -o log_cli=true
-        --tc "hco_subscription:${hcoSubscription}"
-    )
-
-    printf '%s\n' 'phase1_pre_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
-
-    : "Phase 1: pre-upgrade virt + storage (*_before_upgrade)"
-    "${pytestCommon[@]}" \
-        "${cnvUpgradeArgs[@]}" \
-        --junitxml="${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" \
-        --pytest-log-file="${ARTIFACT_DIR}/tests_phase_pre_upgrade.log" \
-        -k "before_upgrade" \
-        tests/virt/upgrade \
-        tests/storage/upgrade \
-        || exitCode=$?
-
-    WaitOdfCsiHealthy
-
-    if (( exitCode != 0 )); then
-        : "Skipping CNV upgrade and post-upgrade because phase 1 failed (exit ${exitCode})"
-        cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
-        return "${exitCode}"
-    fi
-
-    printf '%s\n' 'phase2_cnv_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
-    : "Phase 2: CNV upgrade only (-m cnv_upgrade, production catalog when CNV_SOURCE=production)"
-    "${pytestCommon[@]}" \
-        "${cnvUpgradeArgs[@]}" \
-        --junitxml="${ARTIFACT_DIR}/junit_phase_cnv_upgrade.xml" \
-        --pytest-log-file="${ARTIFACT_DIR}/tests_phase_cnv_upgrade.log" \
-        -m cnv_upgrade \
-        || exitCode=$?
-
-    if (( exitCode != 0 )); then
-        cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
-        return "${exitCode}"
-    fi
-
-    WaitOdfCsiHealthy
-
-    printf '%s\n' 'phase3_post_upgrade' > "${ARTIFACT_DIR}/cnv-upgrade-phase.txt"
-
-    if [[ "${CNV_SKIP_PYTEST_CNV_UPGRADE_DEPENDENCY_TEST}" != "true" ]]; then
-        typeset cnvUpgradeVerifyTest='tests/install_upgrade_operators/product_upgrade/test_upgrade.py::TestUpgrade::test_cnv_upgrade_process'
-        if [[ "${CNV_SOURCE}" == "production" ]]; then
-            cnvUpgradeVerifyTest='tests/install_upgrade_operators/product_upgrade/test_upgrade.py::TestUpgrade::test_production_source_cnv_upgrade_process'
-        fi
-        : "Phase 3a: verify CNV upgrade completed (pytest-dependency gate for after_upgrade)"
-        phaseExit=0
-        "${pytestCommon[@]}" \
-            "${cnvUpgradeArgs[@]}" \
-            --junitxml="${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" \
-            --pytest-log-file="${ARTIFACT_DIR}/tests_phase_cnv_upgrade_verify.log" \
-            "${cnvUpgradeVerifyTest}" \
-            || phaseExit=$?
-        if (( phaseExit != 0 )); then
-            exitCode=${phaseExit}
-        fi
-    fi
-
-    if (( exitCode == 0 )); then
-        : "Phase 3b: post-upgrade virt + storage (*_after_upgrade)"
-        "${pytestCommon[@]}" \
-            "${cnvUpgradeArgs[@]}" \
-            --junitxml="${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" \
-            --pytest-log-file="${ARTIFACT_DIR}/tests_phase_post_upgrade.log" \
-            -k "after_upgrade" \
-            tests/virt/upgrade \
-            tests/storage/upgrade \
-            || exitCode=$?
-    fi
-
-    if [[ -f "${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" ]]; then
-        cp "${ARTIFACT_DIR}/junit_phase_post_upgrade.xml" "${JUNIT_RESULTS_FILE}"
-    elif [[ -f "${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" ]]; then
-        cp "${ARTIFACT_DIR}/junit_phase_cnv_upgrade_verify.xml" "${JUNIT_RESULTS_FILE}"
-    else
-        cp "${ARTIFACT_DIR}/junit_phase_pre_upgrade.xml" "${JUNIT_RESULTS_FILE}" 2>/dev/null || true
-    fi
-
-    return "${exitCode}"
-}
-
-RunCnvUpgradePytestSingle() {
+RunCnvUpgradePytest() {
     typeset hcoSubscription="${1:?}"; (($#)) && shift
     typeset -i exitCode=0
     typeset -a cnvUpgradeArgs=()
@@ -471,6 +477,7 @@ ARTIFACTORY_SERVER=$(head -1 "${BW_PATH}"/artifactory-server)
 ACCESS_TOKEN=$(head -1 "${BW_PATH}"/bitwarden-client-secret)
 ORGANIZATION_ID=$(head -1 "${BW_PATH}"/bitwarden-org-id)
 export ORGANIZATION_ID ACCESS_TOKEN ARTIFACTORY_USER ARTIFACTORY_TOKEN ARTIFACTORY_SERVER
+ResolveCnvVersionExplorerUrl
 [[ "${_wasTracing}" == "true" ]] && set -x
 
 unset KUBERNETES_SERVICE_PORT_HTTPS
@@ -512,18 +519,13 @@ oc get sc
 WaitOdfCsiHealthy
 Cnv__PrepareBootImages
 Cnv__WaitNamespacePvcsIdle openshift-virtualization-os-images "${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
-WaitOdfCsiHealthy
 
 InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
 
 typeset -i exitCode=0
 
-if [[ "${CNV_UPGRADE_PYTEST_SPLIT}" == "true" ]]; then
-    RunCnvUpgradePytestSplit "${hcoSubscription}" || exitCode=$?
-else
-    RunCnvUpgradePytestSingle "${hcoSubscription}" || exitCode=$?
-fi
+RunCnvUpgradePytest "${hcoSubscription}" || exitCode=$?
 
 MapTestsForComponentReadiness "${JUNIT_RESULTS_FILE}"
 
