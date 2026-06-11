@@ -11,6 +11,9 @@ Upgrades the **ACM managed spoke** OCP version after the hub upgrade step.
 | RBAC bootstrap | Spoke | `klusterlet-work-clusterversion` for `klusterlet-work-sa` |
 | Upgrade trigger | Hub | `ManifestWork` with `desiredUpdate.image` (digest-pinned) |
 | Wait | Spoke | `oc wait` on `ClusterVersion` Completed |
+| MCP health | Spoke | No pool Updating; not Degraded; stable for 5 min (default) |
+| CO health | Spoke | All cluster operators Available / not Progressing / not Degraded |
+| Node health | Spoke | All nodes `Ready` |
 
 Consolidating channel/RBAC/admin-ack into hub-only ManifestWork is deferred until validated on target ACM versions.
 
@@ -41,3 +44,6 @@ test:
 |------|---------|
 | `spoke-<name>-clusterversion-rbac.yaml` | ClusterRole/Binding applied on spoke |
 | `spoke-<name>-ocp-upgrade-manifestwork.yaml` | ManifestWork spec (image reference only) |
+| `spoke-<name>-machineconfigpools.txt` | `oc get machineconfigpools` after MCP wait |
+| `spoke-<name>-clusteroperators.txt` | `oc get co` after upgrade CO wait |
+| `spoke-<name>-nodes.txt` | `oc get nodes` after node wait |

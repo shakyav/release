@@ -23,7 +23,20 @@ ref:
   - name: ACM_SPOKE_UPGRADE_TIMEOUT
     default: "3h"
     documentation: Max time to wait for spoke ClusterVersion upgrade to complete. Accepts any oc wait duration.
+  - name: ACM_SPOKE_MCP_READY_TIMEOUT
+    default: "60m"
+    documentation: Max time to wait for spoke MachineConfigPools to finish updating and remain healthy.
+  - name: ACM_SPOKE_MCP_STABLE_PASSES
+    default: "10"
+    documentation: Consecutive successful MCP polls (30s apart) required before proceeding (default 10 = 5 minutes stable).
+  - name: ACM_SPOKE_CO_READY_TIMEOUT
+    default: "45m"
+    documentation: Max time to wait for all spoke cluster operators to be Available, not Progressing, and not Degraded after upgrade.
+  - name: ACM_SPOKE_NODE_READY_TIMEOUT
+    default: "30m"
+    documentation: Max time to wait for all spoke nodes to reach Ready condition after upgrade.
   documentation: |-
     Upgrades the ACM managed spoke cluster (from acm-interop-p2p-cluster-install SHARED_DIR files)
     to OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE (release:target) using ManifestWork on the hub
-    and klusterlet-work RBAC on the spoke.
+    and klusterlet-work RBAC on the spoke. After ClusterVersion completes, waits for MCPs, cluster
+    operators, and nodes to be ready on the spoke (cucushift upgrade-healthcheck order).
