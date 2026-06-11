@@ -6,6 +6,7 @@ ref:
     tag: latest
   commands: acm-interop-p2p-spoke-upgrade-commands.sh
   timeout: 6h0m0s
+  grace_period: 10m0s
   resources:
     requests:
       cpu: '1'
