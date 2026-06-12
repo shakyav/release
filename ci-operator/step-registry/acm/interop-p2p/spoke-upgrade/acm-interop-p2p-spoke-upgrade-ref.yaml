@@ -25,8 +25,10 @@ ref:
     default: "3h"
     documentation: Max time to wait for spoke ClusterVersion upgrade to complete. Accepts any oc wait duration.
   - name: ACM_SPOKE_MCP_READY_TIMEOUT
-    default: "60m"
-    documentation: Max time to wait for spoke MachineConfigPools to finish updating and remain healthy.
+    default: "120m"
+    documentation: |-
+      Minimum max wait for spoke MachineConfigPools after upgrade. Actual wait is the greater of this
+      value and 20 minutes per node (same formula as cucushift-upgrade-healthcheck).
   - name: ACM_SPOKE_MCP_STABLE_PASSES
     default: "10"
     documentation: Consecutive successful MCP polls (30s apart) required before proceeding (default 10 = 5 minutes stable).

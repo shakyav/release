@@ -131,64 +131,136 @@ WaitSpokeUpgradeCompleted() {
 WaitSpokeMachineConfigPoolsReady() {
     typeset kubeconfig="$1"
     typeset -r mcpArtifact="${ARTIFACT_DIR}/spoke-${spokeName}-machineconfigpools.txt"
+    typeset -r mcpFailureArtifact="${ARTIFACT_DIR}/spoke-${spokeName}-machineconfigpools-failure.txt"
     typeset -i pollInterval=30
     typeset -i stablePassesRequired="${ACM_SPOKE_MCP_STABLE_PASSES:-10}"
+    typeset -i nodeCount try=0 successCount=0 degradedStreak=0 ret=0
+    typeset -i maxRetries envTimeoutSec nodesTimeoutSec effectiveTimeoutSec
+    typeset tmpOutput
 
-    : "Waiting for spoke MachineConfigPools (${ACM_SPOKE_MCP_READY_TIMEOUT}, ${stablePassesRequired} consecutive passes)"
-    if ! SPOKE_KUBECONFIG="${kubeconfig}" \
-        STABLE_PASSES="${stablePassesRequired}" \
-        POLL_INTERVAL="${pollInterval}" \
-        timeout "${ACM_SPOKE_MCP_READY_TIMEOUT}" \
-        bash <<'EOS'
-set -uo pipefail
-successCount=0
-degradedStreak=0
-tmpOutput="$(mktemp)"
-trap 'rm -f "${tmpOutput}"' EXIT
-while (( successCount < STABLE_PASSES )); do
-    ret=0
-    updatingMcp=''
-    unhealthyMcp=''
-    if ! oc --kubeconfig="${SPOKE_KUBECONFIG}" get machineconfigpools \
-        -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status' \
-        --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
-        ret=1
-    else
-        updatingMcp="$(grep -v False "${tmpOutput}" || true)"
-        if [[ -n "${updatingMcp}" ]]; then
-            ret=1
-        elif ! oc --kubeconfig="${SPOKE_KUBECONFIG}" get machineconfigpools \
-            -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
-            --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
-            ret=1
+    nodeCount="$(oc --kubeconfig="${kubeconfig}" get nodes --no-headers 2>/dev/null | wc -l)"
+    nodeCount="${nodeCount//[[:space:]]/}"
+    (( nodeCount < 1 )) && nodeCount=3
+    nodesTimeoutSec=$(( nodeCount * 20 * 60 ))
+    envTimeoutSec="$(DurationToSeconds "${ACM_SPOKE_MCP_READY_TIMEOUT}")"
+    effectiveTimeoutSec="${nodesTimeoutSec}"
+    (( envTimeoutSec > effectiveTimeoutSec )) && effectiveTimeoutSec="${envTimeoutSec}"
+    maxRetries=$(( effectiveTimeoutSec / pollInterval ))
+
+    : "Waiting for spoke MachineConfigPools (${nodeCount} nodes, max $(( effectiveTimeoutSec / 60 ))m, ${stablePassesRequired} consecutive passes)"
+    tmpOutput="$(mktemp)"
+    while (( try < maxRetries && successCount < stablePassesRequired )); do
+        ret=0
+        CheckSpokeMachineConfigPools "${kubeconfig}" "${tmpOutput}" || ret=$?
+        if (( ret == 0 )); then
+            degradedStreak=0
+            (( successCount += 1 ))
+        elif (( ret == 1 )); then
+            successCount=0
+            degradedStreak=0
         else
-            unhealthyMcp="$(grep -v 'False.*False.*0' "${tmpOutput}" || true)"
-            if [[ -n "${unhealthyMcp}" ]]; then
-                ret=2
+            successCount=0
+            (( degradedStreak += 1 ))
+            if (( degradedStreak >= 5 )); then
+                WriteSpokeMcpFailureDiagnostics "${kubeconfig}" "${tmpOutput}" "${mcpFailureArtifact}"
+                rm -f "${tmpOutput}"
+                return 1
             fi
         fi
-    fi
-    if (( ret == 0 )); then
-        degradedStreak=0
-        (( successCount += 1 ))
-    elif (( ret == 1 )); then
-        successCount=0
-        degradedStreak=0
-    else
-        successCount=0
-        (( degradedStreak += 1 ))
-        if (( degradedStreak >= 5 )); then
-            exit 1
+        if (( try > 0 && try % 10 == 0 )); then
+            : "MCP wait poll ${try}/${maxRetries}: successCount=${successCount}/${stablePassesRequired}"
         fi
-    fi
-    sleep "${POLL_INTERVAL}"
-done
-EOS
-    then
-        oc --kubeconfig="${kubeconfig}" get machineconfigpools > "${mcpArtifact}" || true
+        sleep "${pollInterval}"
+        (( try += 1 ))
+    done
+    rm -f "${tmpOutput}"
+
+    if (( successCount < stablePassesRequired )); then
+        WriteSpokeMcpFailureDiagnostics "${kubeconfig}" "" "${mcpFailureArtifact}"
+        oc --kubeconfig="${kubeconfig}" get machineconfigpools > "${mcpArtifact}" 2>/dev/null || true
         return 1
     fi
     oc --kubeconfig="${kubeconfig}" get machineconfigpools > "${mcpArtifact}"
+    true
+}
+
+DurationToSeconds() {
+    typeset duration="${1:?}"
+    if [[ "${duration}" =~ ^([0-9]+)h([0-9]+)?m?([0-9]+)?s?$ ]]; then
+        printf '%s\n' $(( ${BASH_REMATCH[1]} * 3600 ))
+        return 0
+    fi
+    if [[ "${duration}" =~ ^([0-9]+)m([0-9]+)?s?$ ]]; then
+        printf '%s\n' $(( ${BASH_REMATCH[1]} * 60 ))
+        return 0
+    fi
+    if [[ "${duration}" =~ ^([0-9]+)s?$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    echo "[ERROR] Invalid duration: ${duration}" >&2
+    return 1
+}
+
+CheckSpokeMachineConfigPools() {
+    typeset kubeconfig="${1:?}"
+    typeset tmpOutput="${2:?}"
+    typeset updatingMcp unhealthyMcp
+
+    if ! oc --kubeconfig="${kubeconfig}" get machineconfigpools \
+        -o 'custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?(@.type=="Updating")].status' \
+        --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
+        return 1
+    fi
+    updatingMcp="$(grep -v False "${tmpOutput}" || true)"
+    if [[ -n "${updatingMcp}" ]]; then
+        return 1
+    fi
+
+    if ! oc --kubeconfig="${kubeconfig}" get machineconfigpools \
+        -o 'custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
+        --no-headers > "${tmpOutput}" || [[ ! -s "${tmpOutput}" ]]; then
+        return 1
+    fi
+    unhealthyMcp="$(grep -Ev '[[:space:]]False[[:space:]]+False[[:space:]]+0[[:space:]]*$' "${tmpOutput}" || true)"
+    if [[ -n "${unhealthyMcp}" ]]; then
+        return 2
+    fi
+    return 0
+}
+
+WriteSpokeMcpFailureDiagnostics() {
+    typeset kubeconfig="${1:?}"
+    typeset detailSource="${2:-}"
+    typeset artifactFile="${3:?}"
+    typeset unhealthyMcp mcpName
+
+    {
+        echo "=== oc get machineconfigpools ==="
+        oc --kubeconfig="${kubeconfig}" get machineconfigpools 2>&1 || true
+        echo
+        echo "=== MCP custom-columns (UPDATING/DEGRADED) ==="
+        oc --kubeconfig="${kubeconfig}" get machineconfigpools \
+            -o 'custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
+            2>&1 || true
+        if [[ -n "${detailSource}" && -f "${detailSource}" ]]; then
+            echo
+            echo "=== Last poll snapshot ==="
+            cat "${detailSource}"
+        fi
+        unhealthyMcp="$(oc --kubeconfig="${kubeconfig}" get machineconfigpools \
+            -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
+            --no-headers 2>/dev/null | grep -Ev '[[:space:]]False[[:space:]]+False[[:space:]]+0[[:space:]]*$' || true)"
+        if [[ -n "${unhealthyMcp}" ]]; then
+            echo
+            echo "=== oc describe unhealthy MCPs ==="
+            while read -r mcpName _; do
+                [[ -n "${mcpName}" ]] || continue
+                echo "--- ${mcpName} ---"
+                oc --kubeconfig="${kubeconfig}" describe machineconfigpool "${mcpName}" 2>&1 || true
+            done <<<"${unhealthyMcp}"
+        fi
+    } > "${artifactFile}"
     true
 }
 
