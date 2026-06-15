@@ -100,6 +100,7 @@ tests:
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "test_failure" , "classification": "CNV Tests Failure"         , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default", "interop-tests"], "jira_assignee": "kbidarka@redhat.com", "jira_component": ["CNV Virt-Cluster"]},
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "pod_failure" , "classification": "CNV Tests Failure"          , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default"]                 , "jira_assignee": "!default"           , "jira_component": ["CNV Virt-Cluster"]},
               {"step": "acm-interop-p2p-spoke-upgrade"           , "failure_type": "all"          , "classification": "Spoke cluster Upgrade"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade-healthcheck" , "failure_type": "all"          , "classification": "Spoke cluster Upgrade Health Check"     , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-upgrade"           , "failure_type": "all"          , "classification": "Cluster Upgrade"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-fetch-managed-clusters", "failure_type": "all", "classification": "ACM cluster failure", "jira_project": "!default", "group": {"name": "opp-tests", "priority": 4}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default"]},
               {"step": "acm-tests-observability", "failure_type": "all", "classification": "ACM OBS testcase failure", "jira_project": "!default", "group": {"name": "opp-tests", "priority": 5}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default","interop-tests"]},
@@ -159,11 +160,12 @@ tests:
     - ref: p2p-cnv-pre-upgrade
     - ref: acm-interop-p2p-cluster-upgrade
     - ref: acm-interop-p2p-spoke-upgrade
+    - ref: acm-interop-p2p-spoke-upgrade-healthcheck
     - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc
     - ref: acm-tests-alc
-  timeout: 16h0m0s
+  timeout: 20h0m0s
 zz_generated_metadata:
   branch: master
   org: RedHatQE

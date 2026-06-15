@@ -11,11 +11,9 @@ Upgrades the **ACM managed spoke** OCP version after the hub upgrade step.
 | RBAC bootstrap | Spoke | `klusterlet-work-clusterversion` for `klusterlet-work-sa` |
 | Upgrade trigger | Hub | `ManifestWork` with `desiredUpdate.image` (digest-pinned) |
 | Wait | Spoke | `oc wait` on `ClusterVersion` Completed |
-| MCP health | Spoke | No pool Updating; not Degraded; stable for 5 min (default). Wait budget: max(`ACM_SPOKE_MCP_READY_TIMEOUT`, 20m × node count) |
-| CO health | Spoke | All cluster operators Available / not Progressing / not Degraded |
-| Node health | Spoke | All nodes `Ready` |
 
-Consolidating channel/RBAC/admin-ack into hub-only ManifestWork is deferred until validated on target ACM versions.
+Post-upgrade MCP, cluster operator, and node health checks run in
+`acm-interop-p2p-spoke-upgrade-healthcheck`.
 
 ## Requirements
 
@@ -30,11 +28,12 @@ Consolidating channel/RBAC/admin-ack into hub-only ManifestWork is deferred unti
 
 ```yaml
 test:
-- ref: acm-interop-p2p-cluster-install        # writes spoke kubeconfig + name
-- ref: acm-fetch-managed-clusters             # writes hub kubeconfig
-- ref: acm-interop-p2p-cluster-upgrade        # hub OCP
-- ref: cucushift-upgrade-healthcheck          # optional
-- ref: acm-interop-p2p-spoke-upgrade          # spoke OCP via ACM
+- ref: acm-interop-p2p-cluster-install
+- ref: acm-fetch-managed-clusters
+- ref: acm-interop-p2p-cluster-upgrade
+- ref: cucushift-upgrade-healthcheck          # hub
+- ref: acm-interop-p2p-spoke-upgrade
+- ref: acm-interop-p2p-spoke-upgrade-healthcheck
 - ref: interop-tests-openshift-virtualization-upgrade-tests
 ```
 
@@ -44,7 +43,3 @@ test:
 |------|---------|
 | `spoke-<name>-clusterversion-rbac.yaml` | ClusterRole/Binding applied on spoke |
 | `spoke-<name>-ocp-upgrade-manifestwork.yaml` | ManifestWork spec (image reference only) |
-| `spoke-<name>-machineconfigpools.txt` | `oc get machineconfigpools` after MCP wait |
-| `spoke-<name>-machineconfigpools-failure.txt` | MCP diagnostics (`describe` unhealthy pools) on timeout/degraded failure |
-| `spoke-<name>-clusteroperators.txt` | `oc get co` after upgrade CO wait |
-| `spoke-<name>-nodes.txt` | `oc get nodes` after node wait |
