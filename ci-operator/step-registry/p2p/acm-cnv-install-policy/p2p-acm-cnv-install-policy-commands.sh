@@ -298,7 +298,8 @@ GetInstalledCnvCsv() {
 }
 
 #=====================
-# ODF virt StorageClass (after CNV operator registers KubeVirt CRDs)
+# ODF virt StorageClass (after CNV operator registers KubeVirt CRDs).
+# When ODF deploy runs later (post-upgrade interop jobs), virt SC is absent here — defer to deploy-odf.
 #=====================
 # Called per-spoke (with spoke KUBECONFIG) before WaitForCNV to ensure the virt StorageClass
 # is ready and annotated as cluster/kubevirt default before HCO boot-image import completes.

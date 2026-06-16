@@ -82,4 +82,9 @@ ref:
     default: "ocs-storagecluster-ceph-rbd-virtualization"
     documentation: |-
       StorageClass for CNV boot images and pytest. Pair with deploy-odf ODF_DEFAULT_STORAGE_CLASS
-      set to the same virt SC before p2p-acm-cnv-install-policy.
+      set to the same virt SC; deploy-odf must complete before this step.
+  - name: CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT
+    default: "5m"
+    documentation: |-
+      Max wait for CNV_TARGET_STORAGE_CLASS to exist before patching default/virt annotations.
+      deploy-odf already waits for ODF readiness; this guards the deploy-odf → CNV tests boundary.

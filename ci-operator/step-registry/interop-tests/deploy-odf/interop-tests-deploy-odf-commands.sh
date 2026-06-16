@@ -257,8 +257,9 @@ typeset defaultSc="${requestedDefaultSc}"
 typeset virtSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization"
 
 # ODF 4.21+ (provider/client model): ocs-operator adds the virt SC to StorageConsumer only
-# when the virtualmachines.kubevirt.io CRD exists (CNV operator). deploy-odf runs before
-# p2p-acm-cnv-install-policy, so defer virt SC wait/default to that step when CRD is absent.
+# when the virtualmachines.kubevirt.io CRD exists (CNV operator). When deploy-odf runs before
+# CNV policy, defer virt SC wait/default to p2p-acm-cnv-install-policy. When deploy-odf runs
+# after CNV (post-upgrade interop jobs), the KubeVirt CRD is present and virt SC setup happens here.
 if [[ "${requestedDefaultSc}" == "${virtSc}" ]] && ! oc get crd/virtualmachines.kubevirt.io &>/dev/null; then
     : "KubeVirt CRD absent; deferring ${virtSc} default setup to CNV policy step"
     defaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"

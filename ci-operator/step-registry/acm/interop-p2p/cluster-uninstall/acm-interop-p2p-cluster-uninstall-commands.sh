@@ -9,7 +9,6 @@
 #   - managed-cluster-name-{N} (indexed files from cluster-install)
 #   - managed-cluster-name (fallback for single-cluster backward compatibility)
 #
-
 set -euxo pipefail; shopt -s inherit_errexit
 eval "$(
     typeset -a _fURL=()

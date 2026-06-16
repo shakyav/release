@@ -165,13 +165,13 @@ tests:
     - ref: acm-mch
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
-    - ref: interop-tests-deploy-odf
     - ref: p2p-acm-cnv-install-policy
     - ref: cucushift-upgrade-prehealthcheck
     - ref: acm-interop-p2p-cluster-upgrade
     - ref: cucushift-upgrade-healthcheck
     - ref: acm-interop-p2p-spoke-upgrade
     - ref: acm-interop-p2p-spoke-upgrade-healthcheck
+    - ref: interop-tests-deploy-odf
     - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc

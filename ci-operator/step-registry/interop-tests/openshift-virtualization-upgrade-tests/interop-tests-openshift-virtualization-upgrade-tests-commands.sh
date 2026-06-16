@@ -151,6 +151,12 @@ DebugOnExit() {
 
 SetDefaultStorageClassForCnv() {
     typeset storageClassName="${1:?}"; (($#)) && shift
+    typeset scWaitTimeout="${CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT:-5m}"
+    oc wait "storageclass/${storageClassName}" --for=create --timeout="${scWaitTimeout}" || {
+        echo "[ERROR] StorageClass ${storageClassName} not available within ${scWaitTimeout}" >&2
+        oc get sc || true
+        exit 1
+    }
     oc get storageclass -o name | xargs -trI{} oc patch {} -p \
         '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "false", "storageclass.kubevirt.io/is-default-virt-class": "false"}}}'
     oc patch storageclass "${storageClassName}" -p \
