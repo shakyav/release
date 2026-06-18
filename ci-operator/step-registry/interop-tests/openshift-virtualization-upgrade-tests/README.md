@@ -36,7 +36,7 @@ env:
 
 | Name | Default | Purpose |
 |------|---------|---------|
-| `CNV_VERSION_EXPLORER_URL` | *(empty)* | CNV Version Explorer API base URL for `--upgrade cnv`. Auto-resolved when empty (see below). |
+| `CNV_VERSION_EXPLORER_URL` | *(empty)* | CNV Version Explorer API base URL for `--upgrade cnv`. Known URL: https://cnv-version-explorer.apps.cnv2.engineering.redhat.com/ — auto-resolved when empty (see below). |
 | `CNV_TARGET_VERSION` | `4.21.0` | `--cnv-version` target |
 | `CNV_TARGET_IMAGE` | *(empty)* | Optional `--cnv-image`; omit for production GA |
 | `CNV_SOURCE` | `production` | `--cnv-source` |

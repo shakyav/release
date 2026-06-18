@@ -31,7 +31,7 @@ ref:
     default: "/bw"
     documentation: Bitwarden folder
   - name: CNV_VERSION_EXPLORER_URL
-    default: ""
+    default: "https://cnv-version-explorer.apps.cnv2.engineering.redhat.com/"
     documentation: |-
       Base URL for the CNV Version Explorer API (required by pytest --upgrade cnv). When empty,
       resolved from ${BW_PATH}/cnv-version-explorer-url or Bitwarden Secrets Manager (bws) at runtime.
