@@ -27,7 +27,9 @@ The OLM Subscription uses metadata.name `hco-operatorhub` with spec.name `kubevi
 
 | Variable | Default | Description |
 |---|---|---|
-| `CNV_POLICY_INSTALL_MAJOR_MINOR` | `""` | Pin latest CSV for this minor (e.g. `4.20`); disables auto-upgrade. |
+| `CNV_POLICY_INSTALL_MAJOR_MINOR` | `""` | Pin latest CSV for this minor (e.g. `4.20`); disables auto-upgrade after install. |
 | `CNV_POLICY_CHANNEL` | `stable` | OLM channel for subscription and CSV lookup. |
+| `CNV_WAIT_TIMEOUT_MINUTES` | `30` | Max minutes for CNV OLM install and HyperConverged Available waits. |
+| `CNV_POLL_INTERVAL_SECONDS` | `30` | Poll interval for subscription, CSV, and HyperConverged waits. |
 | `CNV_POLICY_UPGRADE_APPROVAL` | `None` when pinning; else `Automatic` | After pinned install, patch subscription to `Manual` when `None`/`Manual`. |
 

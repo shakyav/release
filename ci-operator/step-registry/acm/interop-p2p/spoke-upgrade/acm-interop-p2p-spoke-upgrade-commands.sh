@@ -79,6 +79,7 @@ subjects:
 EOF
     : "Applying klusterlet-work ClusterVersion RBAC on spoke"
     oc --kubeconfig="${kubeconfig}" apply -f "${manifestFile}"
+    true
 }
 
 ApplySpokeUpgradeManifestWork() {
@@ -115,6 +116,7 @@ spec:
 EOF
     : "Applying ManifestWork ${mwName} in namespace ${mwNamespace} on hub"
     KUBECONFIG="${hubKubeconfig}" oc apply -f "${manifestFile}"
+    true
 }
 
 WaitSpokeUpgradeCompleted() {
@@ -126,6 +128,7 @@ WaitSpokeUpgradeCompleted() {
     oc --kubeconfig="${kubeconfig}" wait clusterversion/version \
         --for=jsonpath='{.status.history[0].state}'="Completed" \
         --timeout="${ACM_SPOKE_UPGRADE_TIMEOUT}"
+    true
 }
 
 typeset -r rbacManifest="${ARTIFACT_DIR}/spoke-${spokeName}-clusterversion-rbac.yaml"

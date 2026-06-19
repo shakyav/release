@@ -245,10 +245,12 @@ mapfile -t clusterNamesArr < <(LoadSpokeClusterNames)
 
 # Resolve latest kubevirt-hyperconverged version for major.minor from the spoke catalog.
 ResolveCnvLatestVersion() {
-    local majorMinor="$1"
-    local channel="$2"
-    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
-    local versionPrefix="${majorMinor}."
+    typeset majorMinor="$1"
+    typeset channel="$2"
+    typeset spokeKubeconfig="$3"
+    typeset versionPrefix="${majorMinor}."
+
+    [[ -n "${spokeKubeconfig}" ]] || spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
 
     oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
         -n openshift-marketplace -o json \
@@ -263,9 +265,11 @@ ResolveCnvLatestVersion() {
 
 # Resolve packagemanifest CSV name for an exact x.y.z version on the spoke catalog channel.
 ResolveCnvCsvForVersion() {
-    local version="$1"
-    local channel="$2"
-    local spokeKubeconfig="${3:-${SHARED_DIR}/managed-cluster-kubeconfig}"
+    typeset version="$1"
+    typeset channel="$2"
+    typeset spokeKubeconfig="$3"
+
+    [[ -n "${spokeKubeconfig}" ]] || spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
 
     oc --kubeconfig="${spokeKubeconfig}" get packagemanifest kubevirt-hyperconverged \
         -n openshift-marketplace -o json \

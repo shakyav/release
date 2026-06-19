@@ -119,6 +119,7 @@ Need() {
 # Returns: JSON representation of the resource
 JsonGet() {
     oc -n "${1}" get "${2}" "${3}" -o json
+    true
 }
 
 # ResolveSpokeCidrs — derive non-overlapping install-config CIDRs per spoke index.

@@ -42,6 +42,8 @@ env:
 | `CNV_SOURCE` | `production` | `--cnv-source` |
 | `CNV_CHANNEL` | `stable` | `--cnv-channel` |
 | `CNV_TARGET_STORAGE_CLASS` | `ocs-storagecluster-ceph-rbd-virtualization` | Boot images + pytest SC |
+| `CNV_BOOT_IMPORT_CRON_UPTODATE_WAIT_TIMEOUT` | `20m` | Per-cron `oc wait` UpToDate during boot image prep |
+| `CNV_DV_NAMESPACE_PVC_RETRY_WAIT_TIMEOUT` | `300` | PVC idle retry after force-delete of stuck PVCs |
 
 ### `CNV_VERSION_EXPLORER_URL` resolution
 

@@ -78,6 +78,12 @@ ref:
   - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
     default: "600"
     documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to reach Bound/idle.
+  - name: CNV_DV_NAMESPACE_PVC_RETRY_WAIT_TIMEOUT
+    default: "300"
+    documentation: Max seconds to retry PVC idle wait after force-deleting stuck PVCs in boot image prep.
+  - name: CNV_BOOT_IMPORT_CRON_UPTODATE_WAIT_TIMEOUT
+    default: "20m"
+    documentation: Max wait per DataImportCron UpToDate condition during boot image prep.
   - name: CNV_TARGET_STORAGE_CLASS
     default: "ocs-storagecluster-ceph-rbd-virtualization"
     documentation: |-

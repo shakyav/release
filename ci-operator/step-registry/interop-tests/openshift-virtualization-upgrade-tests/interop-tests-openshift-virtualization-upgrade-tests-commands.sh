@@ -114,9 +114,7 @@ ResolveCnvVersionExplorerUrl() {
         LogCnvVersionExplorerAvailability bitwarden 'not available (list failed)'
     fi
 
-    echo '[ERROR] CNV_VERSION_EXPLORER_URL is required for pytest --upgrade cnv (openshift-virtualization-tests).' >&2
-    echo "[ERROR] Checked environment, credentials mount, and Bitwarden — availability only in ${checkFile}." >&2
-    echo '[ERROR] Obtain the URL from CNV Confluence or CNV QE; add cnv-version-explorer-url to openshift-virtualization-tests-credentials or set the env var in job/step config.' >&2
+    : "CNV_VERSION_EXPLORER_URL required for pytest --upgrade cnv; availability in ${checkFile}"
     [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
     return 1
 }
@@ -151,9 +149,8 @@ DebugOnExit() {
 
 SetDefaultStorageClassForCnv() {
     typeset storageClassName="${1:?}"; (($#)) && shift
-    typeset scWaitTimeout="${CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT:-5m}"
+    typeset scWaitTimeout="${CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT}"
     oc wait "storageclass/${storageClassName}" --for=create --timeout="${scWaitTimeout}" || {
-        echo "[ERROR] StorageClass ${storageClassName} not available within ${scWaitTimeout}" >&2
         oc get sc || true
         exit 1
     }
@@ -166,7 +163,7 @@ SetDefaultStorageClassForCnv() {
 
 Cnv__WaitRhelBootImportCronsUpToDate() {
     typeset dvNamespace="${1:?}"; (($#)) && shift
-    typeset -r waitTimeout="${1:-20m}"
+    typeset waitTimeout="${CNV_BOOT_IMPORT_CRON_UPTODATE_WAIT_TIMEOUT}"
     typeset -i appearTimeoutSec=600
     typeset -i deadline=$((SECONDS + appearTimeoutSec))
     typeset -a bootCrons=()
@@ -211,11 +208,11 @@ Cnv__WaitBootImagesUpToDate() {
         : "enableCommonBootImageImport already true"
     fi
 
-    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}" 20m
+    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}"
 
     if ! Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${pvcWaitTimeout}"; then
         Cnv__ForceDeleteStuckPvcs "${dvNamespace}"
-        Cnv__WaitNamespacePvcsIdle "${dvNamespace}" 300
+        Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${CNV_DV_NAMESPACE_PVC_RETRY_WAIT_TIMEOUT}"
     fi
 
     oc get pvc -n "${dvNamespace}"
@@ -435,7 +432,7 @@ BuildCnvUpgradePytestArgs() {
         --cnv-version "${CNV_TARGET_VERSION}"
         --cnv-source "${CNV_SOURCE}"
         --cnv-channel "${CNV_CHANNEL}"
-        --storage-class-matrix=ocs-storagecluster-ceph-rbd-virtualization
+        --storage-class-matrix="${CNV_TARGET_STORAGE_CLASS}"
         --data-collector --data-collector-output-dir="${ARTIFACT_DIR}/"
         --ignore=tests/network/
         --tb=native
@@ -500,13 +497,10 @@ curl -sL "${ocUrl}" | tar -C "${binFolder}" -xzf - oc
 [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
 export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 
-if [[ -n "${CNV_TARGET_MAJOR_MINOR:-}" ]]; then
+if [[ -n "${CNV_TARGET_MAJOR_MINOR}" ]]; then
     typeset resolvedCnvVersion
     resolvedCnvVersion="$(ResolveCnvLatestVersion "${CNV_TARGET_MAJOR_MINOR}" "${CNV_CHANNEL}")"
-    [[ -n "${resolvedCnvVersion}" ]] || {
-        echo "[ERROR] No kubevirt-hyperconverged version for ${CNV_TARGET_MAJOR_MINOR} on channel ${CNV_CHANNEL}" >&2
-        exit 1
-    }
+    [[ -n "${resolvedCnvVersion}" ]]
     export CNV_TARGET_VERSION="${resolvedCnvVersion}"
     printf '%s\n' "${CNV_TARGET_VERSION}" > "${ARTIFACT_DIR}/cnv-target-version"
     : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} from packagemanifest/${CNV_CHANNEL}"
