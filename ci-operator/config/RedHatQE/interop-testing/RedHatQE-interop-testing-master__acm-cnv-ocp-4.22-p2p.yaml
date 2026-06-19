@@ -154,8 +154,8 @@ tests:
     - ref: acm-mch
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
-    - ref: p2p-acm-cnv-install-policy
     - ref: interop-tests-deploy-odf
+    - ref: p2p-acm-cnv-install-policy
     - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc

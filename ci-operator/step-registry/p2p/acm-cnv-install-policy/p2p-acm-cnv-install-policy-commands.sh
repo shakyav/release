@@ -247,7 +247,7 @@ mapfile -t clusterNamesArr < <(LoadSpokeClusterNames)
 ResolveCnvLatestVersion() {
     typeset majorMinor="$1"
     typeset channel="$2"
-    typeset spokeKubeconfig="$3"
+    typeset spokeKubeconfig="${3:-}"
     typeset versionPrefix="${majorMinor}."
 
     [[ -n "${spokeKubeconfig}" ]] || spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
@@ -267,7 +267,7 @@ ResolveCnvLatestVersion() {
 ResolveCnvCsvForVersion() {
     typeset version="$1"
     typeset channel="$2"
-    typeset spokeKubeconfig="$3"
+    typeset spokeKubeconfig="${3:-}"
 
     [[ -n "${spokeKubeconfig}" ]] || spokeKubeconfig="${SHARED_DIR}/managed-cluster-kubeconfig"
 
