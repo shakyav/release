@@ -513,8 +513,9 @@ if [[ -n "${CNV_TARGET_MAJOR_MINOR:-}" ]]; then
 fi
 
 oc whoami --show-console
-typeset hcoSubscription
-hcoSubscription="$(oc get subscription.operators.coreos.com -n openshift-cnv -o jsonpath='{.items[0].metadata.name}')"
+typeset -r hcoSubscriptionName="hco-operatorhub"
+oc get "subscription.operators.coreos.com/${hcoSubscriptionName}" -n openshift-cnv
+typeset hcoSubscription="${hcoSubscriptionName}"
 
 : "CNV upgrade step on spoke: target ${CNV_TARGET_VERSION} via ${CNV_SOURCE}/${CNV_CHANNEL}"
 oc get sc

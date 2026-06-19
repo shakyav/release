@@ -278,9 +278,17 @@ ResolveCnvCsvForVersion() {
         | head -n1
 }
 
-# Installed CNV CSV on the spoke: subscription by package name, else Succeeded CSV with HCO label.
+# Installed CNV CSV on the spoke: hco-operatorhub subscription, else package match, else Succeeded CSV.
 GetInstalledCnvCsv() {
     typeset csv
+    if oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv &>/dev/null; then
+        csv="$(oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv \
+            -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+        if [[ -n "${csv}" ]]; then
+            printf '%s' "${csv}"
+            return 0
+        fi
+    fi
     csv="$(oc get subscription.operators.coreos.com -n openshift-cnv -o json \
         | jq -r '.items[] | select(.spec.name=="kubevirt-hyperconverged") | .status.installedCSV' \
         | grep -v '^$' | head -n1 || true)"
