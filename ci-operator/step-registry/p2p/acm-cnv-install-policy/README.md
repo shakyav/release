@@ -9,8 +9,10 @@
 
 When `CNV_POLICY_INSTALL_MAJOR_MINOR` is set, the policy pins the latest matching CSV and
 version (for example latest 4.20.x on `stable`, resolved from the spoke packagemanifest) via
-`startingCSV` on the `hco-operatorhub` Subscription and sets `installPlanApproval: Manual` so
-OLM does not auto-upgrade CNV before a downstream CNV upgrade test step.
+`startingCSV` on the `hco-operatorhub` Subscription. The policy uses `installPlanApproval:
+Automatic` so the initial InstallPlan is approved; after the pinned CSV is verified on the
+spoke, this step patches the subscription to `Manual` so OLM does not auto-upgrade CNV before
+a downstream CNV upgrade test step.
 
 The OLM Subscription uses metadata.name `hco-operatorhub` with spec.name `kubevirt-hyperconverged`
 (standard GA CNV install), required by openshift-virtualization-tests upgrade suites.
@@ -27,5 +29,5 @@ The OLM Subscription uses metadata.name `hco-operatorhub` with spec.name `kubevi
 |---|---|---|
 | `CNV_POLICY_INSTALL_MAJOR_MINOR` | `""` | Pin latest CSV for this minor (e.g. `4.20`); disables auto-upgrade. |
 | `CNV_POLICY_CHANNEL` | `stable` | OLM channel for subscription and CSV lookup. |
-| `CNV_POLICY_UPGRADE_APPROVAL` | `None` when pinning; else `Automatic` | Maps to Subscription `installPlanApproval` (`Manual` when pinning). |
+| `CNV_POLICY_UPGRADE_APPROVAL` | `None` when pinning; else `Automatic` | After pinned install, patch subscription to `Manual` when `None`/`Manual`. |
 
