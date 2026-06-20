@@ -15,6 +15,8 @@ before waiting for the pinned CSV. When pinning, the policy and spoke subscripti
 `installPlanApproval: Manual`; this step approves the initial InstallPlan for the pinned CSV.
 After the pinned CSV is verified on the spoke, the step reasserts `Manual` so ACM policy
 enforcement and OLM do not auto-upgrade CNV before a downstream CNV upgrade test step.
+It then removes `startingCSV` from the spoke subscription and hub policy so OLM can create
+the upgrade InstallPlan (still `Manual`) that openshift-virtualization-tests approves.
 
 The OLM Subscription uses metadata.name `hco-operatorhub` with spec.name `kubevirt-hyperconverged`
 (standard GA CNV install), required by openshift-virtualization-tests upgrade suites.
