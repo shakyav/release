@@ -580,6 +580,51 @@ PrepareCnvOlmForUpgradeTest() {
     true
 }
 
+# Create a running VMI in test-outdated-vm-ns before the CNV upgrade so that
+# after pytest approves the install plan and the upgrade completes, the VMI's
+# virt-launcher is still at the pre-upgrade version (outdated). This satisfies
+# the hard-coded expected_value="1" assertion in
+# test_metric_kubevirt_vmi_number_of_outdated_after_upgrade, which queries the
+# kubevirt_vmi_number_of_outdated Prometheus metric for that namespace.
+CreateOutdatedVmiForUpgradeTest() {
+    typeset ns="test-outdated-vm-ns"
+    typeset vmiName="test-outdated-vmi"
+
+    oc create namespace "${ns}" --dry-run=client -o yaml --save-config | oc apply -f -
+    oc wait "namespace/${ns}" --for=jsonpath='{.status.phase}'=Active --timeout=1m 1> /dev/null
+
+    {
+        oc create -f - --dry-run=client -o yaml --save-config
+    } 0<<ocEOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: ${vmiName}
+  namespace: ${ns}
+spec:
+  terminationGracePeriodSeconds: 0
+  domain:
+    devices:
+      disks:
+      - disk:
+          bus: virtio
+        name: containerdisk
+    resources:
+      requests:
+        memory: 64Mi
+  volumes:
+  - containerDisk:
+      image: quay.io/kubevirt/cirros-container-disk-demo:latest
+    name: containerdisk
+ocEOF
+
+    oc wait "vmi/${vmiName}" -n "${ns}" \
+        --for=jsonpath='{.status.phase}'=Running \
+        --timeout=5m 1> /dev/null
+
+    true
+}
+
 typeset binFolder
 binFolder="$(mktemp -d /tmp/bin.XXXX)"
 typeset ocUrl="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
@@ -642,6 +687,7 @@ InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
 
 PrepareCnvOlmForUpgradeTest
+CreateOutdatedVmiForUpgradeTest
 
 typeset -i exitCode=0
 
