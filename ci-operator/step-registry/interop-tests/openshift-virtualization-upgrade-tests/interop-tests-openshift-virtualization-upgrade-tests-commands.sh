@@ -497,7 +497,7 @@ PrepareCnvOlmForUpgradeTest() {
     typeset subIp='' ipCsv='' ipPhase='' installedCsv=''
 
     while (( hop < maxHops )); do
-        (( hop++ ))
+        (( ++hop ))  # pre-increment: evaluates to the new value (≥1) so set -e is never triggered
 
         subIp=''
         SECONDS=0
