@@ -24,6 +24,22 @@ ResolveCnvLatestVersion() {
         | sort -V | tail -n1
 }
 
+# Resolve the FIRST (lowest) kubevirt-hyperconverged x.y.z for major.minor from the spoke catalog.
+# Used for one-hop upgrade tests where the target is the initial z-stream entry point for the minor
+# (e.g. 4.21.0) rather than the channel head. OLM's upgrade graph provides a direct 'replaces'
+# edge from the latest 4.20.z to the first 4.21.z, making this a single-hop upgrade.
+ResolveCnvFirstVersion() {
+    typeset majorMinor="${1:?}" channel="${2:?}"
+    oc get packagemanifest kubevirt-hyperconverged -n openshift-marketplace -o json \
+        | jq -r --arg ch "${channel}" --arg prefix "${majorMinor}." '
+            .status.channels[]
+            | select(.name == $ch)
+            | .entries[]
+            | select(.version | startswith($prefix))
+            | .version' \
+        | sort -V | head -n1
+}
+
 # Resolve CNV_VERSION_EXPLORER_URL required by pytest --upgrade cnv.
 # Order: existing env -> ${BW_PATH}/cnv-version-explorer-url -> Bitwarden Secrets Manager (bws).
 # Logs and artifacts record availability only — never secret values or URLs.
@@ -463,6 +479,107 @@ RunCnvUpgradePytest() {
     return "${exitCode}"
 }
 
+# Ensure the subscription's pending install plan targets CNV_TARGET_VERSION before the
+# pytest suite runs. In the standard one-hop upgrade case (4.20.z → 4.21.0) OLM has
+# already created that plan with Manual approval, and this function returns immediately.
+# The loop is retained as a safety net for graphs that require an intermediate step;
+# any such intermediate plan is approved and waited on before checking for the target.
+PrepareCnvOlmForUpgradeTest() {
+    typeset -r targetCsv="kubevirt-hyperconverged-operator.v${CNV_TARGET_VERSION:?}"
+    typeset -r ns="openshift-cnv"
+    typeset -r subApi="subscription.operators.coreos.com/hco-operatorhub"
+    typeset -i maxHops=10
+    typeset -i planPollMax=180  # seconds to wait for OLM to create/update a plan
+    typeset -i planPollInt=10
+    typeset -i csvInstallMax=1800  # 30 min per intermediate CSV install
+    typeset -i csvInstallInt=30
+    typeset -i hop=0
+    typeset subIp='' ipCsv='' ipPhase='' installedCsv=''
+
+    while (( hop < maxHops )); do
+        (( hop++ ))
+
+        subIp=''
+        SECONDS=0
+        until [[ -n "${subIp}" ]]; do
+            subIp="$(oc get "${subApi}" -n "${ns}" \
+                -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
+            [[ -n "${subIp}" ]] && break
+            (( SECONDS >= planPollMax )) && break
+            sleep "${planPollInt}"
+        done
+
+        if [[ -z "${subIp}" ]]; then
+            : "Hop ${hop}: no install plan found after ${planPollMax}s; proceeding to target wait"
+            break
+        fi
+
+        ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
+            -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
+
+        if [[ "${ipCsv}" == "${targetCsv}" ]]; then
+            : "Hop ${hop}: install plan ${subIp} already targets ${targetCsv}"
+            break
+        fi
+
+        ipPhase="$(oc get "installplan/${subIp}" -n "${ns}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        : "Hop ${hop}: approving intermediate plan ${subIp} (${ipCsv}) phase=${ipPhase}"
+
+        if [[ "${ipPhase}" == "RequiresApproval" ]]; then
+            oc patch "installplan/${subIp}" -n "${ns}" --type merge \
+                -p '{"spec":{"approved":true}}'
+        fi
+
+        installedCsv=''
+        SECONDS=0
+        until [[ "${installedCsv}" == "${ipCsv}" ]]; do
+            installedCsv="$(oc get "${subApi}" -n "${ns}" \
+                -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+            [[ "${installedCsv}" == "${ipCsv}" ]] && break
+            (( SECONDS >= csvInstallMax )) && {
+                oc get subscription.operators.coreos.com,installplan,csv -n "${ns}" -o yaml \
+                    > "${ARTIFACT_DIR}/cnv-intermediate-install-wait-failure.yaml" || true
+                : "Timed out waiting for intermediate CSV ${ipCsv} to install (${SECONDS}s)"
+                exit 1
+            }
+            : "Hop ${hop}: waiting for ${ipCsv} to install (${SECONDS}/${csvInstallMax}s)"
+            sleep "${csvInstallInt}"
+        done
+        : "Hop ${hop}: ${ipCsv} installed; waiting for OLM to resolve next plan"
+        sleep 15
+        subIp=''
+    done
+
+    SECONDS=0
+    typeset -i targetWaitMax=600
+    subIp=''
+    ipCsv=''
+    until [[ "${ipCsv}" == "${targetCsv}" ]]; do
+        subIp="$(oc get "${subApi}" -n "${ns}" \
+            -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
+        ipCsv=''
+        if [[ -n "${subIp}" ]]; then
+            ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
+                -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
+        fi
+        [[ "${ipCsv}" == "${targetCsv}" ]] && break
+        (( SECONDS >= targetWaitMax )) && {
+            oc get subscription.operators.coreos.com,installplan,csv -n "${ns}" -o yaml \
+                > "${ARTIFACT_DIR}/cnv-upgrade-installplan-wait-failure.yaml" || true
+            : "Timed out waiting for ${targetCsv} install plan (current=${subIp}/${ipCsv})"
+            exit 1
+        }
+        : "Waiting for ${targetCsv} install plan (${SECONDS}/${targetWaitMax}s, current=${subIp}/${ipCsv})"
+        sleep 10
+    done
+
+    oc get subscription.operators.coreos.com,installplan,csv -n openshift-cnv -o wide \
+        > "${ARTIFACT_DIR}/cnv-pre-upgrade-olm-state.txt" || true
+    : "CNV OLM ready: hco-operatorhub points to ${targetCsv} plan ${subIp}"
+    true
+}
+
 typeset binFolder
 binFolder="$(mktemp -d /tmp/bin.XXXX)"
 typeset ocUrl="https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/latest/openshift-client-linux.tar.gz"
@@ -499,11 +616,11 @@ export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 
 if [[ -n "${CNV_TARGET_MAJOR_MINOR}" ]]; then
     typeset resolvedCnvVersion
-    resolvedCnvVersion="$(ResolveCnvLatestVersion "${CNV_TARGET_MAJOR_MINOR}" "${CNV_CHANNEL}")"
+    resolvedCnvVersion="$(ResolveCnvFirstVersion "${CNV_TARGET_MAJOR_MINOR}" "${CNV_CHANNEL}")"
     [[ -n "${resolvedCnvVersion}" ]]
     export CNV_TARGET_VERSION="${resolvedCnvVersion}"
     printf '%s\n' "${CNV_TARGET_VERSION}" > "${ARTIFACT_DIR}/cnv-target-version"
-    : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} from packagemanifest/${CNV_CHANNEL}"
+    : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} (first z-stream) from packagemanifest/${CNV_CHANNEL}"
 fi
 
 oc whoami --show-console
@@ -523,6 +640,8 @@ Cnv__WaitNamespacePvcsIdle openshift-virtualization-os-images "${CNV_DV_NAMESPAC
 
 InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
+
+PrepareCnvOlmForUpgradeTest
 
 typeset -i exitCode=0
 
