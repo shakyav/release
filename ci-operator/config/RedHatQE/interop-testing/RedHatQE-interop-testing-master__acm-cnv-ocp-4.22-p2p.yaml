@@ -1,14 +1,14 @@
 base_images:
   acmqe-grc-test:
-    name: "2.15"
+    name: "2.16"
     namespace: acm-qe
     tag: acmqe-grc-test
   application-ui-test:
-    name: "2.15"
+    name: "2.16"
     namespace: acm-qe
     tag: application-ui-test
   cli:
-    name: "4.21"
+    name: "4.22"
     namespace: ocp
     tag: cli
   cli-jq:
@@ -20,25 +20,24 @@ base_images:
     namespace: acm-qe
     tag: fetch-managed-clusters
   multicluster-observability-operator-opp:
-    name: "2.15"
+    name: "2.16"
     namespace: acm-qe
     tag: multicluster-observability-operator-opp
-  virtctl:
-    name: "4.21"
-    namespace: ocp
-    tag: virtctl
+  openshift-virtualization-tests:
+    name: openshift-virtualization-tests
+    namespace: ci
+    tag: latest
 build_root:
   image_stream_tag:
     name: release
     namespace: openshift
-    tag: rhel-9-release-golang-1.23-openshift-4.20
+    tag: rhel-9-release-golang-1.25-openshift-4.22
 images:
   items:
   - dockerfile_literal: |
       FROM this-is-ignored
-      RUN dnf install -y git python39 && dnf clean all
+      RUN dnf install -y git python39
     from: cli
-    optional: true
     to: cli-with-git
   - dockerfile_literal: |
       FROM this-is-ignored
@@ -54,13 +53,12 @@ releases:
   initial:
     release:
       channel: stable
-      version: "4.20"
+      version: "4.21"
   latest:
-    prerelease:
+    candidate:
       product: ocp
-      version_bounds:
-        lower: 4.21.0-rc.0
-        upper: 4.21.0-rc.20
+      stream: nightly
+      version: "4.22"
 resources:
   '*':
     requests:
@@ -73,14 +71,13 @@ tests:
     cluster_profile: aws-cspi-qe
     dependencies:
       OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:latest
     env:
-      ACM_CLUSTER_UPGRADE_TARGET_CHANNEL: candidate-4.21
-      ACM_SPOKE_CLUSTER_COUNT: "1"
-      ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.20"
+      ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.21"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
       BASE_DOMAIN: cspilp.interop.ccitredhat.com
       CLOUD_PROVIDER: ipi-aws
-      CNV_ENABLE_CCLM: "false"
+      CNV_TESTS_UPGRADE_ONLY: "true"
       COMPUTE_NODE_TYPE: m6a.2xlarge
       CONTROL_PLANE_INSTANCE_TYPE: m6a.2xlarge
       FIREWATCH_CONFIG: |
@@ -103,20 +100,21 @@ tests:
             ]
         }
       FIREWATCH_CONFIG_FILE_PATH: https://raw.githubusercontent.com/CSPI-QE/cspi-utils/main/firewatch-base-configs/aws-ipi/lp-interop.json
-      FIREWATCH_DEFAULT_JIRA_ADDITIONAL_LABELS: '["4.21-p2p","ipi-aws-p2p","mpiit-acm-virt","mpiit_product2product","mpiit_virt"]'
+      FIREWATCH_DEFAULT_JIRA_ADDITIONAL_LABELS: '["4.22-p2p","ipi-aws-p2p","mpiit-acm-virt","mpiit_product2product","mpiit_virt"]'
       FIREWATCH_DEFAULT_JIRA_ASSIGNEE: vshakya@redhat.com
       FIREWATCH_DEFAULT_JIRA_COMPONENT: '["QA","mpiit_p2p"]'
       FIREWATCH_DEFAULT_JIRA_EPIC: INTEROP-8652
       FIREWATCH_DEFAULT_JIRA_PROJECT: LPINTEROP
       FIREWATCH_FAIL_WITH_TEST_FAILURES: "true"
-      OCP_VERSION: "4.20"
+      OCP_VERSION: "4.21"
       ODF_DEPLOY_ON_SPOKE: "true"
-      ODF_OPERATOR_CHANNEL: stable-4.20
-      ODF_VERSION_MAJOR_MINOR: "4.20"
+      ODF_OPERATOR_CHANNEL: stable-4.21
+      ODF_VERSION_MAJOR_MINOR: "4.21"
       OPERATORS: |
         [
           {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.15", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
         ]
+      TARGET_CHANNEL: candidate-4.22
       USER_TAGS: |
         scenario acm-cnv-p2p
     leases:
@@ -147,9 +145,10 @@ tests:
     - ref: acm-mch
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
+    - ref: interop-tests-deploy-odf
     - ref: p2p-acm-cnv-install-policy
-    - ref: p2p-cnv-pre-upgrade
     - ref: acm-interop-p2p-cluster-upgrade
+    - ref: interop-tests-openshift-virtualization-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc
     - ref: acm-tests-alc
@@ -158,4 +157,4 @@ zz_generated_metadata:
   branch: master
   org: RedHatQE
   repo: interop-testing
-  variant: acm-cnv-ocp-4.21-p2p
+  variant: acm-cnv-ocp-4.22-p2p

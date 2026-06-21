@@ -170,7 +170,6 @@ if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
     exit 1
 fi
 : "OLM installed CSV: ${csvName}"
-oc version
 
 # Phase 3: odf-operator is a meta-operator — its CSV Succeeded only means the odf-operator
 # pod is running. Sub-operators (ocs-operator, noobaa-operator, rook-ceph-operator) are
