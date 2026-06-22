@@ -403,6 +403,28 @@ WaitOdfCsiHealthy() {
     true
 }
 
+# Restart the HPP operator deployment and CSI DaemonSet to flush any stale
+# in-flight volume operation locks that can accumulate after OCP node upgrades
+# (drain/reboot cycle). Mirrors WaitOdfCsiHealthy for the HPP storage stack.
+# Guard: no-op when HPP is not installed (not all clusters use HPP storage).
+WaitHppCsiHealthy() {
+    typeset -r hppNs="openshift-cnv"
+    typeset -r hppOperatorDeploy="hostpath-provisioner-operator"
+    typeset -r hppCsiDs="hostpath-provisioner-csi"
+
+    if ! oc get deployment "${hppOperatorDeploy}" -n "${hppNs}" &>/dev/null; then
+        : "HPP operator not present in ${hppNs} — skipping WaitHppCsiHealthy"
+        return 0
+    fi
+
+    : "Restarting HPP operator and CSI DaemonSet to flush stale volume locks"
+    oc -n "${hppNs}" rollout restart "deployment/${hppOperatorDeploy}"
+    oc -n "${hppNs}" rollout status "deployment/${hppOperatorDeploy}" --timeout=5m
+    oc -n "${hppNs}" rollout restart "daemonset/${hppCsiDs}"
+    oc -n "${hppNs}" rollout status "daemonset/${hppCsiDs}" --timeout=10m
+    true
+}
+
 MapTestsForComponentReadiness() {
     [[ "${MAP_TESTS}" != "true" ]] && return
 
@@ -659,11 +681,13 @@ ConfigureOdfVolumeSnapshotClass
 EnsureCdiStorageProfileRwx "${CNV_TARGET_STORAGE_CLASS}"
 oc get sc
 WaitOdfCsiHealthy
+WaitHppCsiHealthy
 Cnv__PrepareBootImages
 Cnv__WaitNamespacePvcsIdle openshift-virtualization-os-images "${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
 
 InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
+WaitHppCsiHealthy
 
 PrepareCnvOlmForUpgradeTest
 SlowDownHcoWorkloadUpdateForUpgradeTest

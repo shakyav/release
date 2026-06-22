@@ -66,6 +66,12 @@ releases:
     release:
       channel: stable
       version: "4.21"
+  target:
+    prerelease:
+      product: ocp
+      version_bounds:
+        lower: 4.22.0-rc.0
+        upper: 4.22.0-rc.20
 resources:
   '*':
     requests:
@@ -78,6 +84,7 @@ tests:
     cluster_profile: aws-cspi-qe
     dependencies:
       OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE: release:initial
+      OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:target
     env:
       ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.21"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
@@ -98,6 +105,10 @@ tests:
               {"step": "acm-interop-p2p-cluster-install"           , "failure_type": "all"          , "classification": "Spoke cluster Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-uninstall"           , "failure_type": "all"          , "classification": "Spoke cluster Un-Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "p2p-acm-cnv-install-policy"           , "failure_type": "all"          , "classification": "CNV installation policy deploy"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-cluster-upgrade"       , "failure_type": "all"          , "classification": "Hub OCP Upgrade"                                 , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade-prehealthcheck", "failure_type": "all"     , "classification": "Spoke Pre-Upgrade Health Check"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade"         , "failure_type": "all"          , "classification": "Spoke OCP Upgrade"                               , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade-healthcheck", "failure_type": "all"        , "classification": "Spoke Post-Upgrade Health Check"                 , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "test_failure" , "classification": "CNV Tests Failure"         , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default", "interop-tests"], "jira_assignee": "kbidarka@redhat.com", "jira_component": ["CNV Virt-Cluster"]},
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "pod_failure" , "classification": "CNV Tests Failure"          , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default"]                 , "jira_assignee": "!default"           , "jira_component": ["CNV Virt-Cluster"]},
               {"step": "acm-fetch-managed-clusters", "failure_type": "all", "classification": "ACM cluster failure", "jira_project": "!default", "group": {"name": "opp-tests", "priority": 4}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default"]},
@@ -115,7 +126,7 @@ tests:
       FIREWATCH_DEFAULT_JIRA_EPIC: INTEROP-8652
       FIREWATCH_DEFAULT_JIRA_PROJECT: LPINTEROP
       FIREWATCH_FAIL_WITH_TEST_FAILURES: "true"
-      OCP_VERSION: "4.21"
+      OCP_VERSION: "4.22"
       ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization
       ODF_DEPLOY_ON_SPOKE: "true"
       ODF_OPERATOR_CHANNEL: stable-4.21
@@ -124,6 +135,7 @@ tests:
         [
           {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.15", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
         ]
+      TARGET_CHANNEL: candidate-4.22
       USER_TAGS: |
         scenario acm-cnv-p2p
     leases:
@@ -156,6 +168,12 @@ tests:
     - ref: acm-fetch-managed-clusters
     - ref: interop-tests-deploy-odf
     - ref: p2p-acm-cnv-install-policy
+    - ref: cucushift-upgrade-prehealthcheck
+    - ref: acm-interop-p2p-cluster-upgrade
+    - ref: cucushift-upgrade-healthcheck
+    - ref: acm-interop-p2p-spoke-upgrade-prehealthcheck
+    - ref: acm-interop-p2p-spoke-upgrade
+    - ref: acm-interop-p2p-spoke-upgrade-healthcheck
     - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc
