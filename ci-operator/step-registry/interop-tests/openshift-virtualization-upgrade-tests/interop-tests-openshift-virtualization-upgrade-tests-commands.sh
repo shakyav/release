@@ -580,48 +580,19 @@ PrepareCnvOlmForUpgradeTest() {
     true
 }
 
-# Create a running VMI in test-outdated-vm-ns before the CNV upgrade so that
-# after pytest approves the install plan and the upgrade completes, the VMI's
-# virt-launcher is still at the pre-upgrade version (outdated). This satisfies
-# the hard-coded expected_value="1" assertion in
-# test_metric_kubevirt_vmi_number_of_outdated_after_upgrade, which queries the
-# kubevirt_vmi_number_of_outdated Prometheus metric for that namespace.
-CreateOutdatedVmiForUpgradeTest() {
-    typeset ns="test-outdated-vm-ns"
-    typeset vmiName="test-outdated-vmi"
-
-    oc create namespace "${ns}" --dry-run=client -o yaml --save-config | oc apply -f -
-    oc wait "namespace/${ns}" --for=jsonpath='{.status.phase}'=Active --timeout=1m 1> /dev/null
-
-    {
-        oc create -f - --dry-run=client -o yaml --save-config
-    } 0<<ocEOF | oc apply -f -
-apiVersion: kubevirt.io/v1
-kind: VirtualMachineInstance
-metadata:
-  name: ${vmiName}
-  namespace: ${ns}
-spec:
-  terminationGracePeriodSeconds: 0
-  domain:
-    devices:
-      disks:
-      - disk:
-          bus: virtio
-        name: containerdisk
-    resources:
-      requests:
-        memory: 64Mi
-  volumes:
-  - containerDisk:
-      image: quay.io/kubevirt/cirros-container-disk-demo:latest
-    name: containerdisk
-ocEOF
-
-    oc wait "vmi/${vmiName}" -n "${ns}" \
-        --for=jsonpath='{.status.phase}'=Running \
-        --timeout=5m 1> /dev/null
-
+# Disable HCO automatic workload updates before the CNV upgrade so that VMIs
+# created by the pre-upgrade observability tests (e.g.
+# test_metric_kubevirt_vmi_number_of_outdated_before_upgrade) are not
+# live-migrated to the new virt-launcher during or after the upgrade.
+# Without this patch, KubeVirt's workload update controller migrates those VMIs
+# within ~30 minutes of the upgrade, removing the outdatedLauncherImage label
+# before the post-upgrade fixture (outdated_vmis_count) runs.
+# The test suite creates the namespace and VMI itself; we only ensure they
+# remain on the pre-upgrade virt-launcher for the post-upgrade metric checks.
+DisableHcoWorkloadAutoUpdateForUpgradeTest() {
+    Retry 25 5 oc patch hco kubevirt-hyperconverged -n openshift-cnv \
+        --type=merge \
+        -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":[]}}}'
     true
 }
 
@@ -687,7 +658,7 @@ InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
 
 PrepareCnvOlmForUpgradeTest
-CreateOutdatedVmiForUpgradeTest
+DisableHcoWorkloadAutoUpdateForUpgradeTest
 
 typeset -i exitCode=0
 
