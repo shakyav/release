@@ -1,22 +1,87 @@
 #!/bin/bash
-#
-# OpenShift Virtualization interop tests: prepare cluster storage/CNV state, run pytest (smoke or OCP upgrade),
-# optional junit mapping, copy results to SHARED_DIR. See ref env (e.g. CNV_TESTS_UPGRADE_ONLY).
-# Shell: xtrace on from start; off only while reading Bitwarden files and exporting tokens; on again after (MPEX Section0).
-#
-set -euxo pipefail; shopt -s inherit_errexit
+set -euo pipefail; shopt -s inherit_errexit
 
-typeset -i startTime=$SECONDS
-
-# This trap will be executed when the script exits for any reason (successful, error, or signal).
-trap 'DebugOnExit' EXIT
+typeset -i start_time=${SECONDS}
 
 # shellcheck disable=SC2329
-DebugOnExit() {
-    typeset -i exitCode=$?
-    typeset -i endTime=$SECONDS
-    typeset -i executionTime=$((endTime - startTime))
-    typeset hcoNamespace="openshift-cnv"
+debug_on_exit() {
+  local -i exit_code="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
+  local -i start_time="${1:?MUST give the script start time.}"; (($#)) && shift
+  local -i execution_time=$((SECONDS - start_time))
+  local -i debug_threshold=720 # 12 minutes in seconds
+  local hco_namespace=openshift-cnv
+  local lockfile=/tmp/debug_marker
+  set +e
+
+  if [[ (${execution_time} -lt ${debug_threshold}) || ${exit_code} -ne 0 ]]; then
+    echo
+    echo "--------------------------------------------------------------------------------"
+    echo " SCRIPT EXITED PREMATURELY (runtime: ${execution_time}s) "
+    echo "--------------------------------------------------------------------------------"
+    echo "Entering debug sleep. You can now inspect the system state."
+    echo "Remove the file: ${lockfile}, to continue script execution."
+    echo "PID: $$"
+    echo "Exit Code: ${exit_code}"
+    echo "--------------------------------------------------------------------------------"
+    echo "Dump HCO CR and logs for debugging."
+    oc get -n "${hco_namespace}" "${hcoKind}" kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
+    oc logs --since=1h -n "${hco_namespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
+    echo "--------------------------------------------------------------------------------"
+    echo "Run must-gather for additional debugging information."
+    runMustGather
+    echo "--------------------------------------------------------------------------------"
+    echo "    😴 😴 😴"
+
+    # Use file flag so loop can be interrupted by removing the file
+    touch "${lockfile}"
+    local -i attempts=120
+    local -i attempt_count=0
+    local -i sleep_time=120
+    set +x
+    while [[ -f "${lockfile}" ]]; do
+        sleep "${sleep_time}"
+        ((attempt_count++))
+        if [[ ${attempt_count} -ge ${attempts} ]]; then
+            echo "Timed out waiting for lockfile to be removed."
+            break
+        fi
+    done
+    set -x
+  fi
+
+  # exit with the original exit code.
+  exit "${exit_code}"
+}
+
+# This trap will be executed when the script exits for any reason (successful, error, or signal).
+if [ "${MAP_TESTS}" = "true" ]; then
+    # Map results by setting identifier prefix in tests suites names for reporting tools
+    # Merge original results into a single file and compress
+    # Send modified file to shared dir for Data Router Reporter step (run here so EXIT stays debug_on_exit).
+    eval "$(
+                typeset -a _fURL=()
+                type -t wget 1>/dev/null && _fURL=(wget -qO-) || _fURL=(curl -fsSL)
+                "${_fURL[@]}" \
+curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/ci-operator/interop/common/ExitTrap--PostProcessPrep.sh
+    )"
+    # shellcheck disable=SC2154
+    trap '
+        typeset -i ec=$?
+        LP_IO__ET_PPP__NEW_TS_NAME="${DR__RP__CR_COMP_NAME}--%s" \
+            ExitTrap--PostProcessPrep junit--cnv__interop-tests__openshift-virtualization-tests.xml || true
+        debug_on_exit "${ec}" "${start_time}"
+    ' EXIT
+else
+    trap 'debug_on_exit "$?" "${start_time}"' EXIT
+fi
+
+typeset binFolder=''
+typeset ocUrl=''
+typeset hcoSubscription=''
+typeset -i rc=0
+typeset -x junitResultsFile="${ARTIFACT_DIR}/junit_results.xml"
+typeset -x htmlResultsFile="${ARTIFACT_DIR}/report.html"
+typeset -x hcoKind='hyperconvergeds.v1beta1.hco.kubevirt.io'
 
     if (( exitCode != 0 )); then
         : "SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s, PID: $$, exitCode: ${exitCode})"
@@ -129,7 +194,7 @@ function cnv::toggle_common_boot_image_import () {
     local status="${1}"
     retry 5 5 oc patch "${hcoKind}" kubevirt-hyperconverged -n openshift-cnv \
         --type=merge \
-        -p "$(jq -cn --argjson v "${status}" '{"spec":{"enableCommonBootImageImport":$v}}')"
+        -p "{\"spec\":{\"enableCommonBootImageImport\": ${status}}}"
 
     # In some edge cases, the HCO deployment will be scaled down, and not scale up.
     oc scale deployment hco-operator --replicas 1 -n openshift-cnv
