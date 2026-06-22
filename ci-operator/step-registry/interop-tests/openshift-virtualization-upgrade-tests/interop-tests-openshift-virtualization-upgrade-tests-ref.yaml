@@ -10,7 +10,7 @@ ref:
   from: openshift-virtualization-tests-sshpass
   commands: interop-tests-openshift-virtualization-upgrade-tests-commands.sh
   timeout: 4h0m0s
-  grace_period: 2h
+  grace_period: 15m
   cli: latest
   credentials:
     - name: cluster-secrets-aws-interop-qe

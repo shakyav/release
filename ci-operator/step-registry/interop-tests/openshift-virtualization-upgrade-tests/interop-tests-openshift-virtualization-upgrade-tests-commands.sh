@@ -153,11 +153,13 @@ DebugOnExit() {
         oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator \
             > "${ARTIFACT_DIR}"/hco.log
         RunMustGather
-        : "Entering debug hold — remove /tmp/debug_marker to continue, or press Ctrl+C"
+        : "Entering debug hold (30 min max) — remove /tmp/debug_marker to exit early"
         touch /tmp/debug_marker
-        while [[ -f /tmp/debug_marker ]]; do
+        typeset -i _debugDeadline=$(( SECONDS + 1800 ))
+        while [[ -f /tmp/debug_marker ]] && (( SECONDS < _debugDeadline )); do
             sleep 120
         done
+        rm -f /tmp/debug_marker
     fi
 
     exit "${exitCode}"
