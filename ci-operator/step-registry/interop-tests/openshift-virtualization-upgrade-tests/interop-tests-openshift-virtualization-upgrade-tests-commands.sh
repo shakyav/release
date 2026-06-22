@@ -580,19 +580,27 @@ PrepareCnvOlmForUpgradeTest() {
     true
 }
 
-# Disable HCO automatic workload updates before the CNV upgrade so that VMIs
-# created by the pre-upgrade observability tests (e.g.
-# test_metric_kubevirt_vmi_number_of_outdated_before_upgrade) are not
-# live-migrated to the new virt-launcher during or after the upgrade.
-# Without this patch, KubeVirt's workload update controller migrates those VMIs
-# within ~30 minutes of the upgrade, removing the outdatedLauncherImage label
-# before the post-upgrade fixture (outdated_vmis_count) runs.
-# The test suite creates the namespace and VMI itself; we only ensure they
-# remain on the pre-upgrade virt-launcher for the post-upgrade metric checks.
-DisableHcoWorkloadAutoUpdateForUpgradeTest() {
+# Slow down the HCO workload update controller before the CNV upgrade so that
+# VMIs created by the pre-upgrade observability test
+# (test_metric_kubevirt_vmi_number_of_outdated_before_upgrade) remain outdated
+# long enough for the post-upgrade metric checks to pass.
+#
+# Two-part problem this solves:
+#  1. Default behaviour (~1m interval): the workload updater migrates the VMI
+#     within ~30 min of the upgrade, clearing the outdatedLauncherImage label
+#     and zeroing the Prometheus metric before tests 16-17 run.
+#  2. workloadUpdateMethods: [] (previously tried): the workload updater still
+#     labels the VMI (test_outdated_vmis_count passes) but does NOT publish the
+#     kubevirt_vmi_number_of_outdated Prometheus metric — that metric is only
+#     exported when at least one active workload update method is configured.
+#
+# Solution: keep LiveMigrate as the update method (so the metric IS published)
+# but set batchEvictionInterval to 12 h so the first migration batch starts
+# well after the test suite has finished.
+SlowDownHcoWorkloadUpdateForUpgradeTest() {
     Retry 25 5 oc patch hco kubevirt-hyperconverged -n openshift-cnv \
         --type=merge \
-        -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":[]}}}'
+        -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":["LiveMigrate"],"batchEvictionInterval":"12h0m0s","batchEvictionSize":1}}}'
     true
 }
 
@@ -658,7 +666,7 @@ InstallAndVerifyVirtctl
 WaitOdfCsiHealthy
 
 PrepareCnvOlmForUpgradeTest
-DisableHcoWorkloadAutoUpdateForUpgradeTest
+SlowDownHcoWorkloadUpdateForUpgradeTest
 
 typeset -i exitCode=0
 
