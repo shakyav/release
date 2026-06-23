@@ -87,7 +87,7 @@ set -o errexit
 set -o pipefail
 
 function run_command_oc() {
-    local try=0 max=40 ret_val
+    typeset -i try=0 max=40; typeset ret_val
 
     if [[ "$#" -lt 1 ]]; then
         return 0
@@ -111,9 +111,9 @@ function run_command_oc() {
 }
 
 function check_clusteroperators() {
-    local tmp_ret=0 tmp_clusteroperator input column last_column_name tmp_clusteroperator_1 rc null_version unavailable_operator degraded_operator
+    typeset -i tmp_ret=0; typeset tmp_clusteroperator input column last_column_name tmp_clusteroperator_1 rc null_version unavailable_operator degraded_operator
 
-    echo "Make sure every operator do not report empty column"
+    : "Make sure every operator does not report empty column"
     tmp_clusteroperator=$(mktemp /tmp/health_check-script.XXXXXX)
     input="${tmp_clusteroperator}"
     ${OC} get clusteroperator >"${tmp_clusteroperator}"
@@ -137,13 +137,13 @@ function check_clusteroperators() {
     done < "${input}"
     rm -f "${tmp_clusteroperator}"
 
-    echo "Make sure every operator column reports version"
+    : "Make sure every operator column reports version"
     if null_version=$(${OC} get clusteroperator -o json | jq '.items[] | select(.status.versions == null) | .metadata.name') && [[ ${null_version} != "" ]]; then
         echo >&2 "Null Version: ${null_version}"
         (( tmp_ret += 1 ))
     fi
 
-    echo "Make sure every operator's AVAILABLE column is True"
+    : "Make sure every operator's AVAILABLE column is True"
     if unavailable_operator=$(${OC} get clusteroperator | awk '$3 == "False"' | grep "False"); then
         echo >&2 "Some operator's AVAILABLE is False"
         echo >&2 "$unavailable_operator"
@@ -154,7 +154,7 @@ function check_clusteroperators() {
         (( tmp_ret += 1 ))
     fi
 
-    echo "Make sure every operator's PROGRESSING column is False"
+    : "Make sure every operator's PROGRESSING column is False"
     if progressing_operator=$(${OC} get clusteroperator | awk '$4 == "True"' | grep "True"); then
         echo >&2 "Some operator's PROGRESSING is True"
         echo >&2 "$progressing_operator"
@@ -165,7 +165,7 @@ function check_clusteroperators() {
         (( tmp_ret += 1 ))
     fi
 
-    echo "Make sure every operator's DEGRADED column is False"
+    : "Make sure every operator's DEGRADED column is False"
     # In disconnected install, openshift-sample often get into Degrade state, so it is better to remove them from cluster from flexy post-action
     #degraded_operator=$(${OC} get clusteroperator | grep -v "openshift-sample" | awk '$5 == "True"')
     if degraded_operator=$(${OC} get clusteroperator | awk '$5 == "True"' | grep "True"); then
@@ -183,32 +183,29 @@ function check_clusteroperators() {
 }
 
 function wait_clusteroperators_continous_success() {
-    local try=0 continous_successful_check=0 passed_criteria=3 max_retries="${ACM_SPOKE_CO_READY_TIMEOUT_MINUTES}"
-    while (( try < max_retries && continous_successful_check < passed_criteria )); do
-        echo "Checking #${try}"
+    typeset -i continuousSuccessfulCheck=0 passedCriteria=3
+    typeset -i wMax=$(( ACM_SPOKE_CO_READY_TIMEOUT_MINUTES * 60 )) wInt=60
+    SECONDS=0
+    while (( SECONDS < wMax && continuousSuccessfulCheck < passedCriteria )); do
+        : "Checking CO status (${SECONDS}/${wMax}s, consecutive pass ${continuousSuccessfulCheck}/${passedCriteria})"
         if check_clusteroperators; then
-            echo "Passed #${continous_successful_check}"
-            (( continous_successful_check += 1 ))
+            (( continuousSuccessfulCheck += 1 ))
         else
-            echo "cluster operators are not ready yet, wait and retry..."
-            continous_successful_check=0
+            : "cluster operators not ready yet, waiting (${SECONDS}/${wMax}s)"
+            continuousSuccessfulCheck=0
         fi
-        sleep 60
-        (( try += 1 ))
+        sleep "${wInt}"
     done
-    if (( continous_successful_check != passed_criteria )); then
+    if (( continuousSuccessfulCheck < passedCriteria )); then
         echo >&2 "Some cluster operator does not get ready or not stable"
-        echo "Debug: current CO output is:"
         oc get co
         return 1
-    else
-        echo "All cluster operators status check PASSED"
-        return 0
     fi
+    : "All cluster operators status check PASSED"
 }
 
 function check_mcp() {
-    local updating_mcp unhealthy_mcp tmp_output
+    typeset updating_mcp unhealthy_mcp tmp_output unhealthy_mcp_names mcp_name
 
     tmp_output=$(mktemp)
     oc get machineconfigpools -o custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?\(@.type==\"Updating\"\)].status --no-headers > "${tmp_output}" || true
@@ -216,99 +213,93 @@ function check_mcp() {
     if [[ -s "${tmp_output}" ]]; then
         updating_mcp=$(cat "${tmp_output}" | grep -v "False")
         if [[ -n "${updating_mcp}" ]]; then
-            echo "Some mcp is updating..."
+            : "Some mcp is updating"
             echo "${updating_mcp}"
             return 1
         fi
     else
-        echo "Did not run 'oc get machineconfigpools' successfully!"
+        : "Did not run 'oc get machineconfigpools' successfully"
         return 1
     fi
 
-    # Do not check UPDATED on purpose, beause some paused mcp would not update itself until unpaused
+    # Do not check UPDATED on purpose, because some paused mcp would not update itself until unpaused
     oc get machineconfigpools -o custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?\(@.type==\"Updating\"\)].status,DEGRADED:status.conditions[?\(@.type==\"Degraded\"\)].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount --no-headers > "${tmp_output}" || true
     # using the size of output to determinate if oc command is executed successfully
     if [[ -s "${tmp_output}" ]]; then
         unhealthy_mcp=$(cat "${tmp_output}" | grep -v "False.*False.*0")
         if [[ -n "${unhealthy_mcp}" ]]; then
-            echo "Detected unhealthy mcp:"
+            : "Detected unhealthy mcp"
             echo "${unhealthy_mcp}"
-            echo "Real-time detected unhealthy mcp:"
+            : "Real-time detected unhealthy mcp"
             oc get machineconfigpools -o custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?\(@.type==\"Updating\"\)].status,DEGRADED:status.conditions[?\(@.type==\"Degraded\"\)].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount | grep -v "False.*False.*0"
-            echo "Real-time full mcp output:"
+            : "Real-time full mcp output"
             oc get machineconfigpools
-            echo ""
             unhealthy_mcp_names=$(echo "${unhealthy_mcp}" | awk '{print $1}')
-            echo "Using oc describe to check status of unhealthy mcp ..."
+            : "Using oc describe to check status of unhealthy mcp"
             for mcp_name in ${unhealthy_mcp_names}; do
-              echo "Name: $mcp_name"
-              oc describe mcp $mcp_name || echo "oc describe mcp $mcp_name failed"
+              : "Name: ${mcp_name}"
+              oc describe mcp "${mcp_name}" || echo >&2 "oc describe mcp ${mcp_name} failed"
             done
             return 2
         fi
     else
-        echo "Did not run 'oc get machineconfigpools' successfully!"
+        : "Did not run 'oc get machineconfigpools' successfully"
         return 1
     fi
     return 0
 }
 
 function wait_mcp_continous_success() {
-    local try=0 continous_successful_check=0 passed_criteria max_retries ret=0 interval=30
-    local num nodeMcpMinutes totalMcpMinutes
-    num=$(oc get node --no-headers | wc -l)
-    # Spoke post-upgrade MCP budget: max(floor, nodes * minutes-per-node). Cucushift default is 20m/node
+    typeset -i nodeCount nodeMcpMinutes totalMcpMinutes wMax wInt=30
+    typeset -i continuousSuccessfulCheck=0 passedCriteria=10  # 5 min × 60 s ÷ 30 s interval
+    typeset -i continuousDegradedCheck=0 degradedCriteria=5
+    typeset -i ret=0
+    nodeCount="$(oc get node -o json | jq '.items | length')"
+    # Spoke post-upgrade MCP budget: max(floor, nodes × minutes-per-node). Cucushift default is 20m/node
     # with no floor; raised after rehearsal #2065916519451201536 exhausted ~196m on a ~6-node spoke.
-    nodeMcpMinutes=$(expr "${num}" \* "${ACM_SPOKE_MCP_MINUTES_PER_NODE}")
+    nodeMcpMinutes=$(( nodeCount * ACM_SPOKE_MCP_MINUTES_PER_NODE ))
     if (( nodeMcpMinutes > ACM_SPOKE_MCP_READY_TIMEOUT_MINUTES )); then
         totalMcpMinutes=$nodeMcpMinutes
     else
         totalMcpMinutes=$ACM_SPOKE_MCP_READY_TIMEOUT_MINUTES
     fi
-    max_retries=$(expr "${totalMcpMinutes}" \* 60 \/ "${interval}")
-    passed_criteria=$(expr 5 \* 60 \/ $interval) # We consider mcp to be updated if its status is updated for 5 minutes
-    local continous_degraded_check=0 degraded_criteria=5
-    while (( try < max_retries && continous_successful_check < passed_criteria )); do
-        echo "Checking #${try}"
+    wMax=$(( totalMcpMinutes * 60 ))
+    SECONDS=0
+    while (( SECONDS < wMax && continuousSuccessfulCheck < passedCriteria )); do
+        : "Checking MCP status (${SECONDS}/${wMax}s, consecutive pass ${continuousSuccessfulCheck}/${passedCriteria})"
         ret=0
         check_mcp || ret=$?
-        if [[ "$ret" == "0" ]]; then
-            continous_degraded_check=0
-            echo "Passed #${continous_successful_check}"
-            (( continous_successful_check += 1 ))
-        elif [[ "$ret" == "1" ]]; then
-            echo "Some machines are updating..."
-            continous_successful_check=0
-            continous_degraded_check=0
+        if [[ "${ret}" == "0" ]]; then
+            continuousDegradedCheck=0
+            (( continuousSuccessfulCheck += 1 ))
+        elif [[ "${ret}" == "1" ]]; then
+            : "Some machines are updating, waiting (${SECONDS}/${wMax}s)"
+            continuousSuccessfulCheck=0
+            continuousDegradedCheck=0
         else
-            continous_successful_check=0
-            echo "Some machines are degraded #${continous_degraded_check}..."
-            (( continous_degraded_check += 1 ))
-            if (( continous_degraded_check >= degraded_criteria )); then
+            continuousSuccessfulCheck=0
+            : "Some machines are degraded (${continuousDegradedCheck}/${degradedCriteria}), waiting (${SECONDS}/${wMax}s)"
+            (( continuousDegradedCheck += 1 ))
+            if (( continuousDegradedCheck >= degradedCriteria )); then
                 break
             fi
         fi
-        echo "wait and retry..."
-        sleep ${interval}
-        (( try += 1 ))
+        sleep "${wInt}"
     done
-    if (( continous_successful_check != passed_criteria )); then
+    if (( continuousSuccessfulCheck < passedCriteria )); then
         echo >&2 "Some mcp does not get ready or not stable"
-        echo "Debug: current mcp output is:"
         oc get machineconfigpools
         return 1
-    else
-        echo "All mcp status check PASSED"
-        return 0
     fi
+    : "All mcp status check PASSED"
 }
 
 function check_node() {
-    local node_number ready_number
+    typeset node_number ready_number
     node_number=$(${OC} get node |grep -vc STATUS)
     ready_number=$(${OC} get node |grep -v STATUS | awk '$2 == "Ready"' | wc -l)
     if (( node_number == ready_number )); then
-        echo "All nodes status check PASSED"
+        : "All nodes status check PASSED"
         return 0
     else
         if (( ready_number == 0 )); then
@@ -322,13 +313,13 @@ function check_node() {
 }
 
 function check_pod() {
-    echo "Show all pods status for reference/debug"
+    : "Show all pods status for reference/debug"
     oc get pods --all-namespaces
 }
 
 function run_command() {
-    local CMD="$1"
-    echo "Running command: ${CMD}"
+    typeset CMD="$1"
+    : "Running command: ${CMD}"
     eval "${CMD}"
 }
 
@@ -343,16 +334,16 @@ OC="run_command_oc"
 
 run_command "oc get machineconfig"
 
-echo "Step #1: Make sure no degrated or updating mcp"
+: "Step #1: Make sure no degraded or updating mcp"
 wait_mcp_continous_success
 
-echo "Step #2: check all cluster operators get stable and ready"
+: "Step #2: check all cluster operators get stable and ready"
 wait_clusteroperators_continous_success
 
-echo "Step #3: Make sure every machine is in 'Ready' status"
+: "Step #3: Make sure every machine is in 'Ready' status"
 check_node
 
-echo "Step #4: check all pods are in status running or complete"
+: "Step #4: check all pods are in status running or complete"
 check_pod
 
 true
