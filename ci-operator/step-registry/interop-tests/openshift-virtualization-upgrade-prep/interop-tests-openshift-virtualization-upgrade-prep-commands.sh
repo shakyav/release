@@ -58,8 +58,9 @@ Retry() {
 
 SetDefaultStorageClassForCnv() {
     typeset storageClassName="${1:?}"; (($#)) && shift
-    typeset scWaitTimeout="${CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT}"
-    oc wait "storageclass/${storageClassName}" --for=create --timeout="${scWaitTimeout}" || {
+    oc get "storageclass/${storageClassName}" > /dev/null || {
+        printf 'ERROR: StorageClass %s not found (interop-tests-deploy-odf must complete first)\n' \
+            "${storageClassName}" >&2
         oc get sc || true
         exit 1
     }
