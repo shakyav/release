@@ -1,9 +1,10 @@
 #!/bin/bash
 #
-# CNV upgrade tests on the ACM spoke: cluster prep, then pytest --upgrade cnv. Target version is
-# resolved from spoke packagemanifest when CNV_TARGET_MAJOR_MINOR is set (e.g. latest 4.21.x).
-# Spoke OCP upgrade is a separate step (acm-interop-p2p-spoke-upgrade).
-# See openshift-virtualization-tests docs/INSTALL_AND_UPGRADE.md (CNV upgrade section).
+# CNV upgrade tests on the ACM spoke: runs pytest --upgrade cnv.
+# Cluster and OLM prep is handled by the preceding
+# interop-tests-openshift-virtualization-upgrade-prep step.
+# CNV_TARGET_VERSION is read from ${SHARED_DIR}/cnv-target-version written by that step;
+# falls back to env-var default if the file is absent (e.g. standalone run).
 #
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -11,23 +12,8 @@ eval "$(
     curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
 )"; EnsureReqs jq
 
-# Resolve latest kubevirt-hyperconverged x.y.z for major.minor from the spoke catalog channel.
-ResolveCnvLatestVersion() {
-    typeset majorMinor="${1:?}" channel="${2:?}"
-    oc get packagemanifest kubevirt-hyperconverged -n openshift-marketplace -o json \
-        | jq -r --arg ch "${channel}" --arg prefix "${majorMinor}." '
-            .status.channels[]
-            | select(.name == $ch)
-            | .entries[]
-            | select(.version | startswith($prefix))
-            | .version' \
-        | sort -V | tail -n1
-}
-
 # Resolve the FIRST (lowest) kubevirt-hyperconverged x.y.z for major.minor from the spoke catalog.
-# Used for one-hop upgrade tests where the target is the initial z-stream entry point for the minor
-# (e.g. 4.21.0) rather than the channel head. OLM's upgrade graph provides a direct 'replaces'
-# edge from the latest 4.20.z to the first 4.21.z, making this a single-hop upgrade.
+# Used as a fallback when ${SHARED_DIR}/cnv-target-version is absent (standalone run).
 ResolveCnvFirstVersion() {
     typeset majorMinor="${1:?}" channel="${2:?}"
     oc get packagemanifest kubevirt-hyperconverged -n openshift-marketplace -o json \
@@ -38,101 +24,6 @@ ResolveCnvFirstVersion() {
             | select(.version | startswith($prefix))
             | .version' \
         | sort -V | head -n1
-}
-
-# Resolve CNV_VERSION_EXPLORER_URL required by pytest --upgrade cnv.
-# Order: existing env -> ${BW_PATH}/cnv-version-explorer-url -> Bitwarden Secrets Manager (bws).
-# Logs and artifacts record availability only — never secret values or URLs.
-ResolveCnvVersionExplorerUrl() {
-    [[ $- == *x* ]] && _resolveUrlWasTracing=true || _resolveUrlWasTracing=false
-    set +x
-
-    typeset checkFile="${ARTIFACT_DIR}/cnv-version-explorer-url-check.txt"
-    typeset sourceFile="${ARTIFACT_DIR}/cnv-version-explorer-url-source.txt"
-    typeset -a bwSecretNames=(
-        cnv_version_explorer_url
-        CNV_VERSION_EXPLORER_URL
-        default_cnv_version_explorer_url
-    )
-    typeset credPath url secretName secretId secretJson secretValue parsedUrl bwListJson
-
-    LogCnvVersionExplorerAvailability() {
-        typeset source="${1:?}" status="${2:?}"
-        printf '%s: %s\n' "${source}" "${status}" >> "${checkFile}"
-        : "CNV Version Explorer URL (${source}): ${status}"
-    }
-
-    : > "${checkFile}"
-
-    if [[ -n "${CNV_VERSION_EXPLORER_URL:-}" ]]; then
-        LogCnvVersionExplorerAvailability environment available
-        printf 'environment\n' > "${sourceFile}"
-        [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
-        return 0
-    fi
-    LogCnvVersionExplorerAvailability environment 'not available'
-
-    credPath="${BW_PATH}/cnv-version-explorer-url"
-    if [[ -r "${credPath}" && -s "${credPath}" ]]; then
-        url="$(head -1 "${credPath}" | tr -d '\r\n')"
-        if [[ -n "${url}" ]]; then
-            export CNV_VERSION_EXPLORER_URL="${url}"
-            unset url
-            LogCnvVersionExplorerAvailability credentials-mount available
-            printf 'credentials-mount\n' > "${sourceFile}"
-            [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
-            return 0
-        fi
-        LogCnvVersionExplorerAvailability credentials-mount 'not available (empty file)'
-    else
-        LogCnvVersionExplorerAvailability credentials-mount 'not available'
-    fi
-
-    if [[ -z "${ACCESS_TOKEN:-}" ]]; then
-        LogCnvVersionExplorerAvailability bitwarden 'not available (ACCESS_TOKEN unset)'
-    elif ! command -v bws >/dev/null 2>&1; then
-        LogCnvVersionExplorerAvailability bitwarden 'not available (bws not in PATH)'
-    elif bwListJson="$(bws secret list 2>/dev/null)" && [[ -n "${bwListJson}" ]]; then
-        LogCnvVersionExplorerAvailability bitwarden 'list available'
-        for secretName in "${bwSecretNames[@]}"; do
-            secretId="$(jq -r --arg n "${secretName}" '[.[] | select(.key == $n) | .id] | first // empty' <<<"${bwListJson}")"
-            if [[ -z "${secretId}" ]]; then
-                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available'
-                continue
-            fi
-            LogCnvVersionExplorerAvailability "bitwarden:${secretName}" available
-            if ! secretJson="$(bws secret get "${secretId}" 2>/dev/null)" || [[ -z "${secretJson}" ]]; then
-                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available (get failed)'
-                unset secretId secretJson
-                continue
-            fi
-            unset secretId
-            secretValue="$(jq -r '.value // empty' <<<"${secretJson}")"
-            unset secretJson
-            parsedUrl=""
-            if [[ -n "${secretValue}" ]] && jq -e . >/dev/null 2>&1 <<<"${secretValue}"; then
-                parsedUrl="$(jq -r '.url // .URL // .server // empty' <<<"${secretValue}")"
-            fi
-            [[ -z "${parsedUrl}" && -n "${secretValue}" ]] && parsedUrl="${secretValue}"
-            unset secretValue
-            if [[ -n "${parsedUrl}" ]]; then
-                export CNV_VERSION_EXPLORER_URL="${parsedUrl}"
-                unset parsedUrl
-                LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'available (resolved)'
-                printf 'bitwarden:%s\n' "${secretName}" > "${sourceFile}"
-                [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
-                return 0
-            fi
-            LogCnvVersionExplorerAvailability "bitwarden:${secretName}" 'not available (empty or unparseable value)'
-        done
-        unset bwListJson
-    else
-        LogCnvVersionExplorerAvailability bitwarden 'not available (list failed)'
-    fi
-
-    : "CNV_VERSION_EXPLORER_URL required for pytest --upgrade cnv; availability in ${checkFile}"
-    [[ "${_resolveUrlWasTracing}" == "true" ]] && set -x
-    return 1
 }
 
 typeset -i startTime=$SECONDS
@@ -163,84 +54,6 @@ DebugOnExit() {
     fi
 
     exit "${exitCode}"
-}
-
-SetDefaultStorageClassForCnv() {
-    typeset storageClassName="${1:?}"; (($#)) && shift
-    typeset scWaitTimeout="${CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT}"
-    oc wait "storageclass/${storageClassName}" --for=create --timeout="${scWaitTimeout}" || {
-        oc get sc || true
-        exit 1
-    }
-    oc get storageclass -o name | xargs -trI{} oc patch {} -p \
-        '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "false", "storageclass.kubevirt.io/is-default-virt-class": "false"}}}'
-    oc patch storageclass "${storageClassName}" -p \
-        '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true", "storageclass.kubevirt.io/is-default-virt-class": "true"}}}'
-    true
-}
-
-Cnv__WaitRhelBootImportCronsUpToDate() {
-    typeset dvNamespace="${1:?}"; (($#)) && shift
-    typeset waitTimeout="${CNV_BOOT_IMPORT_CRON_UPTODATE_WAIT_TIMEOUT}"
-    typeset -i appearTimeoutSec=600
-    typeset -i deadline=$((SECONDS + appearTimeoutSec))
-    typeset -a bootCrons=()
-    typeset cronName
-
-    while (( SECONDS < deadline )); do
-        bootCrons=()
-        while read -r cronName; do
-            [[ -n "${cronName}" ]] && bootCrons+=("${cronName}")
-        done < <(
-            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
-                | grep -E '^(rhel[0-9]+|windows[0-9]*)-image-cron$' || true
-        )
-        ((${#bootCrons[@]})) && break
-        sleep 10
-    done
-
-    ((${#bootCrons[@]})) || {
-        : "No RHEL/Windows DataImportCrons in ${dvNamespace} after ${appearTimeoutSec}s"
-        exit 1
-    }
-
-    for cronName in "${bootCrons[@]}"; do
-        oc wait DataImportCron -n "${dvNamespace}" "${cronName}" \
-            --for=condition=UpToDate --timeout="${waitTimeout}"
-    done
-    true
-}
-
-Cnv__WaitBootImagesUpToDate() {
-    typeset dvNamespace="openshift-virtualization-os-images"
-    typeset -i pvcWaitTimeout="${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
-    typeset importEnabled=''
-
-    SetDefaultStorageClassForCnv "${CNV_TARGET_STORAGE_CLASS}"
-
-    importEnabled="$(oc get hco kubevirt-hyperconverged -n openshift-cnv \
-        -o jsonpath='{.spec.enableCommonBootImageImport}')"
-    if [[ "${importEnabled}" != "true" ]]; then
-        Cnv__ToggleCommonBootImageImport "true"
-    else
-        : "enableCommonBootImageImport already true"
-    fi
-
-    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}"
-
-    if ! Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${pvcWaitTimeout}"; then
-        Cnv__ForceDeleteStuckPvcs "${dvNamespace}"
-        Cnv__WaitNamespacePvcsIdle "${dvNamespace}" "${CNV_DV_NAMESPACE_PVC_RETRY_WAIT_TIMEOUT}"
-    fi
-
-    oc get pvc -n "${dvNamespace}"
-    true
-}
-
-Cnv__PrepareBootImages() {
-    printf '%s\n' 'wait_only' > "${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt"
-    Cnv__WaitBootImagesUpToDate
-    true
 }
 
 # shellcheck disable=SC2329
@@ -289,141 +102,6 @@ Retry() {
         done
         true
     )
-    true
-}
-
-Cnv__ToggleCommonBootImageImport() {
-    typeset status="${1:?}"; (($#)) && shift
-    Retry 25 5 oc patch hco kubevirt-hyperconverged -n openshift-cnv \
-        --type=merge \
-        -p "$(jq -cn --argjson v "${status}" '{"spec":{"enableCommonBootImageImport":$v}}')"
-
-    oc scale deployment hco-operator --replicas 1 -n openshift-cnv
-
-    oc wait hco kubevirt-hyperconverged -n openshift-cnv \
-        --for=condition='Available' \
-        --timeout='5m'
-    true
-}
-
-Cnv__WaitNamespacePvcsIdle() {
-    typeset ns="${1:?}"; (($#)) && shift
-    typeset -i wMax="${1:?}"; (($#)) && shift
-    typeset -i wInt=10
-    typeset pending=''
-    SECONDS=0
-    until [[ -z "${pending}" ]]; do
-        pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
-            | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
-        if [[ -z "${pending}" ]] \
-            && [[ "$(oc get pvc -n "${ns}" --no-headers 2>/dev/null | wc -l)" -eq 0 ]]; then
-            break
-        fi
-        if (( SECONDS >= wMax )); then
-            oc get pvc -n "${ns}" -o wide \
-                > "${ARTIFACT_DIR}/cnv-stuck-pvcs-${ns}.txt" || true
-            : "PVCs still not idle in ${ns} after ${wMax}s: ${pending:-<see artifact>}"
-            return 1
-        fi
-        : "Waiting for PVCs in ${ns} to finish delete (${SECONDS}/${wMax}s)"
-        sleep "${wInt}"
-    done
-    true
-}
-
-Cnv__ForceDeleteStuckPvcs() {
-    typeset ns="${1:?}"
-    typeset pvcName
-    for pvcName in $(
-        oc get pvc -n "${ns}" \
-            -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}' \
-            2>/dev/null
-    ); do
-        : "Removing finalizers from stuck PVC ${ns}/${pvcName}"
-        oc patch pvc "${pvcName}" -n "${ns}" \
-            -p '{"metadata":{"finalizers":null}}' --type=merge || true
-    done
-    true
-}
-
-ConfigureOdfVolumeSnapshotClass() {
-    typeset -r snapClass='ocs-storagecluster-rbdplugin-snapclass'
-    typeset -r snapCtrlNs='openshift-cluster-storage-operator'
-    typeset -r snapDeploy='csi-snapshot-controller'
-
-    if ! oc get volumesnapshotclass "${snapClass}" &>/dev/null; then
-        : "VolumeSnapshotClass ${snapClass} not found; skipping default snapshot class setup"
-        return 0
-    fi
-
-    oc get volumesnapshotclass -o name \
-        | xargs -rI{} oc annotate {} snapshot.storage.kubernetes.io/is-default-class- --overwrite
-    oc annotate volumesnapshotclass "${snapClass}" \
-        snapshot.storage.kubernetes.io/is-default-class=true --overwrite
-
-    if oc -n "${snapCtrlNs}" get deployment "${snapDeploy}" &>/dev/null; then
-        oc -n "${snapCtrlNs}" rollout restart "deployment/${snapDeploy}"
-        oc -n "${snapCtrlNs}" rollout status "deployment/${snapDeploy}" --timeout=5m
-    fi
-    true
-}
-
-EnsureCdiStorageProfileRwx() {
-    typeset storageClassName="${1:?}"; (($#)) && shift
-
-    if ! oc get storageprofile "${storageClassName}" &>/dev/null; then
-        : "StorageProfile ${storageClassName} not found; skipping RWX patch"
-        return 0
-    fi
-
-    oc patch storageprofile "${storageClassName}" --type=merge -p \
-        "$(jq -cn '{
-            "spec": {
-                "claimPropertySets": [
-                    {"accessModes": ["ReadWriteMany"], "volumeMode": "Block"},
-                    {"accessModes": ["ReadWriteOnce"], "volumeMode": "Block"},
-                    {"accessModes": ["ReadWriteOnce"], "volumeMode": "Filesystem"}
-                ]
-            }
-        }')"
-
-    : "StorageProfile ${storageClassName} patched — RWX Block is now the first claimPropertySet"
-    oc get storageprofile "${storageClassName}" \
-        -o jsonpath='{.spec.claimPropertySets}' | jq .
-    true
-}
-
-WaitOdfCsiHealthy() {
-    typeset -r odfNs="openshift-storage"
-    typeset -r rbdDeploy="openshift-storage.rbd.csi.ceph.com-ctrlplugin"
-    typeset -r rbdNodeDs="openshift-storage.rbd.csi.ceph.com-nodeplugin"
-    : "Restarting ODF RBD CSI controller and node plugin to flush stale volume locks"
-    oc -n "${odfNs}" rollout restart "deployment/${rbdDeploy}"
-    oc -n "${odfNs}" rollout status "deployment/${rbdDeploy}" --timeout=5m
-    oc -n "${odfNs}" rollout restart "daemonset/${rbdNodeDs}"
-    oc -n "${odfNs}" rollout status "daemonset/${rbdNodeDs}" --timeout=10m
-    true
-}
-
-# Restart the HPP operator deployment and CSI DaemonSet to flush any stale
-# in-flight volume operation locks that can accumulate after OCP node upgrades
-# (drain/reboot cycle). Mirrors WaitOdfCsiHealthy for the HPP storage stack.
-# Guard: no-op when HPP is not installed (not all clusters use HPP storage).
-WaitHppCsiHealthy() {
-    typeset -r hppNs="openshift-cnv"
-    typeset -r hppOperatorDeploy="hostpath-provisioner-operator"
-    typeset -r hppCsiDs="hostpath-provisioner-csi"
-
-    if ! oc get deployment "${hppOperatorDeploy}" -n "${hppNs}" &>/dev/null; then
-        : "HPP operator not present in ${hppNs} — skipping WaitHppCsiHealthy"
-        return 0
-    fi
-
-    : "Restarting HPP operator and CSI DaemonSet to flush stale volume locks"
-    oc -n "${hppNs}" rollout restart "deployment/${hppOperatorDeploy}"
-    oc -n "${hppNs}" rollout status "deployment/${hppOperatorDeploy}" --timeout=5m
-    oc -n "${hppNs}" rollout restart "daemonset/${hppCsiDs}"
-    oc -n "${hppNs}" rollout status "daemonset/${hppCsiDs}" --timeout=10m
     true
 }
 
@@ -503,130 +181,7 @@ RunCnvUpgradePytest() {
     return "${exitCode}"
 }
 
-# Ensure the subscription's pending install plan targets CNV_TARGET_VERSION before the
-# pytest suite runs. In the standard one-hop upgrade case (4.20.z → 4.21.0) OLM has
-# already created that plan with Manual approval, and this function returns immediately.
-# The loop is retained as a safety net for graphs that require an intermediate step;
-# any such intermediate plan is approved and waited on before checking for the target.
-PrepareCnvOlmForUpgradeTest() {
-    typeset -r targetCsv="kubevirt-hyperconverged-operator.v${CNV_TARGET_VERSION:?}"
-    typeset -r ns="openshift-cnv"
-    typeset -r subApi="subscription.operators.coreos.com/hco-operatorhub"
-    typeset -i maxHops=10
-    typeset -i planPollMax=180  # seconds to wait for OLM to create/update a plan
-    typeset -i planPollInt=10
-    typeset -i csvInstallMax=1800  # 30 min per intermediate CSV install
-    typeset -i csvInstallInt=30
-    typeset -i hop=0
-    typeset subIp='' ipCsv='' ipPhase='' installedCsv=''
-
-    while (( hop < maxHops )); do
-        (( ++hop ))  # pre-increment: evaluates to the new value (≥1) so set -e is never triggered
-
-        subIp=''
-        SECONDS=0
-        until [[ -n "${subIp}" ]]; do
-            subIp="$(oc get "${subApi}" -n "${ns}" \
-                -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
-            [[ -n "${subIp}" ]] && break
-            (( SECONDS >= planPollMax )) && break
-            sleep "${planPollInt}"
-        done
-
-        if [[ -z "${subIp}" ]]; then
-            : "Hop ${hop}: no install plan found after ${planPollMax}s; proceeding to target wait"
-            break
-        fi
-
-        ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
-            -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
-
-        if [[ "${ipCsv}" == "${targetCsv}" ]]; then
-            : "Hop ${hop}: install plan ${subIp} already targets ${targetCsv}"
-            break
-        fi
-
-        ipPhase="$(oc get "installplan/${subIp}" -n "${ns}" \
-            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-        : "Hop ${hop}: approving intermediate plan ${subIp} (${ipCsv}) phase=${ipPhase}"
-
-        if [[ "${ipPhase}" == "RequiresApproval" ]]; then
-            oc patch "installplan/${subIp}" -n "${ns}" --type merge \
-                -p '{"spec":{"approved":true}}'
-        fi
-
-        installedCsv=''
-        SECONDS=0
-        until [[ "${installedCsv}" == "${ipCsv}" ]]; do
-            installedCsv="$(oc get "${subApi}" -n "${ns}" \
-                -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
-            [[ "${installedCsv}" == "${ipCsv}" ]] && break
-            (( SECONDS >= csvInstallMax )) && {
-                oc get subscription.operators.coreos.com,installplan,csv -n "${ns}" -o yaml \
-                    > "${ARTIFACT_DIR}/cnv-intermediate-install-wait-failure.yaml" || true
-                : "Timed out waiting for intermediate CSV ${ipCsv} to install (${SECONDS}s)"
-                exit 1
-            }
-            : "Hop ${hop}: waiting for ${ipCsv} to install (${SECONDS}/${csvInstallMax}s)"
-            sleep "${csvInstallInt}"
-        done
-        : "Hop ${hop}: ${ipCsv} installed; waiting for OLM to resolve next plan"
-        sleep 15
-        subIp=''
-    done
-
-    SECONDS=0
-    typeset -i targetWaitMax=600
-    subIp=''
-    ipCsv=''
-    until [[ "${ipCsv}" == "${targetCsv}" ]]; do
-        subIp="$(oc get "${subApi}" -n "${ns}" \
-            -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
-        ipCsv=''
-        if [[ -n "${subIp}" ]]; then
-            ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
-                -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
-        fi
-        [[ "${ipCsv}" == "${targetCsv}" ]] && break
-        (( SECONDS >= targetWaitMax )) && {
-            oc get subscription.operators.coreos.com,installplan,csv -n "${ns}" -o yaml \
-                > "${ARTIFACT_DIR}/cnv-upgrade-installplan-wait-failure.yaml" || true
-            : "Timed out waiting for ${targetCsv} install plan (current=${subIp}/${ipCsv})"
-            exit 1
-        }
-        : "Waiting for ${targetCsv} install plan (${SECONDS}/${targetWaitMax}s, current=${subIp}/${ipCsv})"
-        sleep 10
-    done
-
-    oc get subscription.operators.coreos.com,installplan,csv -n openshift-cnv -o wide \
-        > "${ARTIFACT_DIR}/cnv-pre-upgrade-olm-state.txt" || true
-    : "CNV OLM ready: hco-operatorhub points to ${targetCsv} plan ${subIp}"
-    true
-}
-
-# Slow down the HCO workload update controller before the CNV upgrade so that
-# VMIs created by the pre-upgrade observability test
-# (test_metric_kubevirt_vmi_number_of_outdated_before_upgrade) remain outdated
-# long enough for the post-upgrade metric checks to pass.
-#
-# Two-part problem this solves:
-#  1. Default behaviour (~1m interval): the workload updater migrates the VMI
-#     within ~30 min of the upgrade, clearing the outdatedLauncherImage label
-#     and zeroing the Prometheus metric before tests 16-17 run.
-#  2. workloadUpdateMethods: [] (previously tried): the workload updater still
-#     labels the VMI (test_outdated_vmis_count passes) but does NOT publish the
-#     kubevirt_vmi_number_of_outdated Prometheus metric — that metric is only
-#     exported when at least one active workload update method is configured.
-#
-# Solution: keep LiveMigrate as the update method (so the metric IS published)
-# but set batchEvictionInterval to 12 h so the first migration batch starts
-# well after the test suite has finished.
-SlowDownHcoWorkloadUpdateForUpgradeTest() {
-    Retry 25 5 oc patch hco kubevirt-hyperconverged -n openshift-cnv \
-        --type=merge \
-        -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":["LiveMigrate"],"batchEvictionInterval":"12h0m0s","batchEvictionSize":1}}}'
-    true
-}
+# ── main ──────────────────────────────────────────────────────────────────────
 
 typeset binFolder
 binFolder="$(mktemp -d /tmp/bin.XXXX)"
@@ -645,7 +200,6 @@ ARTIFACTORY_SERVER=$(head -1 "${BW_PATH}"/artifactory-server)
 ACCESS_TOKEN=$(head -1 "${BW_PATH}"/bitwarden-client-secret)
 ORGANIZATION_ID=$(head -1 "${BW_PATH}"/bitwarden-org-id)
 export ORGANIZATION_ID ACCESS_TOKEN ARTIFACTORY_USER ARTIFACTORY_TOKEN ARTIFACTORY_SERVER
-ResolveCnvVersionExplorerUrl
 [[ "${_wasTracing}" == "true" ]] && set -x
 
 unset KUBERNETES_SERVICE_PORT_HTTPS
@@ -662,37 +216,31 @@ curl -sL "${ocUrl}" | tar -C "${binFolder}" -xzf - oc
 [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
 export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 
-if [[ -n "${CNV_TARGET_MAJOR_MINOR}" ]]; then
+# Read CNV_TARGET_VERSION written by the prep step; fall back to env default.
+if [[ -f "${SHARED_DIR}/cnv-target-version" ]]; then
+    export CNV_TARGET_VERSION
+    CNV_TARGET_VERSION="$(cat "${SHARED_DIR}/cnv-target-version")"
+    : "Read CNV_TARGET_VERSION=${CNV_TARGET_VERSION} from ${SHARED_DIR}/cnv-target-version"
+elif [[ -n "${CNV_TARGET_MAJOR_MINOR}" ]]; then
     typeset resolvedCnvVersion
     resolvedCnvVersion="$(ResolveCnvFirstVersion "${CNV_TARGET_MAJOR_MINOR}" "${CNV_CHANNEL}")"
     [[ -n "${resolvedCnvVersion}" ]]
     export CNV_TARGET_VERSION="${resolvedCnvVersion}"
-    printf '%s\n' "${CNV_TARGET_VERSION}" > "${ARTIFACT_DIR}/cnv-target-version"
-    : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} (first z-stream) from packagemanifest/${CNV_CHANNEL}"
+    : "Resolved CNV ${CNV_TARGET_MAJOR_MINOR}.x -> ${CNV_TARGET_VERSION} (fallback: prep step file absent)"
+else
+    : "Using env default CNV_TARGET_VERSION=${CNV_TARGET_VERSION}"
 fi
+
+printf '%s\n' "${CNV_TARGET_VERSION}" > "${ARTIFACT_DIR}/cnv-target-version"
 
 oc whoami --show-console
 typeset -r hcoSubscriptionName="hco-operatorhub"
 oc get "subscription.operators.coreos.com/${hcoSubscriptionName}" -n openshift-cnv
 typeset hcoSubscription="${hcoSubscriptionName}"
 
-: "CNV upgrade step on spoke: target ${CNV_TARGET_VERSION} via ${CNV_SOURCE}/${CNV_CHANNEL}"
-oc get sc
-SetDefaultStorageClassForCnv "${CNV_TARGET_STORAGE_CLASS}"
-ConfigureOdfVolumeSnapshotClass
-EnsureCdiStorageProfileRwx "${CNV_TARGET_STORAGE_CLASS}"
-oc get sc
-WaitOdfCsiHealthy
-WaitHppCsiHealthy
-Cnv__PrepareBootImages
-Cnv__WaitNamespacePvcsIdle openshift-virtualization-os-images "${CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT}"
+: "CNV upgrade tests on spoke: target ${CNV_TARGET_VERSION} via ${CNV_SOURCE}/${CNV_CHANNEL}"
 
 InstallAndVerifyVirtctl
-WaitOdfCsiHealthy
-WaitHppCsiHealthy
-
-PrepareCnvOlmForUpgradeTest
-SlowDownHcoWorkloadUpdateForUpgradeTest
 
 typeset -i exitCode=0
 

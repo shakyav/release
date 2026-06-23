@@ -3,9 +3,8 @@ ref:
   documentation: |-
     CNV upgrade tests on the ACM spoke cluster (managed-cluster-kubeconfig).
     Runs pytest --upgrade cnv per openshift-virtualization-tests INSTALL_AND_UPGRADE.md.
-    Default target: latest CNV 4.21.x from production catalog (stable channel), resolved from
-    spoke packagemanifest when CNV_TARGET_MAJOR_MINOR is set.
-    Spoke OCP upgrade is handled by acm-interop-p2p-spoke-upgrade in a prior step.
+    Reads CNV_TARGET_VERSION from ${SHARED_DIR}/cnv-target-version written by the preceding
+    interop-tests-openshift-virtualization-upgrade-prep step; falls back to env default.
     Network upgrade tests are excluded via --ignore=tests/network/.
   from: openshift-virtualization-tests-sshpass
   commands: interop-tests-openshift-virtualization-upgrade-tests-commands.sh
@@ -27,14 +26,12 @@ ref:
       cpu: 100m
       memory: 200Mi
   env:
+  - name: CNV_VERSION_EXPLORER_URL
+    default: "https://cnv-version-explorer.apps.cnv2.engineering.redhat.com/"
+    documentation: Base URL for the CNV Version Explorer API (required by pytest --upgrade cnv).
   - name: BW_PATH
     default: "/bw"
     documentation: Bitwarden folder
-  - name: CNV_VERSION_EXPLORER_URL
-    default: "https://cnv-version-explorer.apps.cnv2.engineering.redhat.com/"
-    documentation: |-
-      Base URL for the CNV Version Explorer API (required by pytest --upgrade cnv). When empty,
-      resolved from ${BW_PATH}/cnv-version-explorer-url or Bitwarden Secrets Manager (bws) at runtime.
   - name: OCP_VERSION
     default: "4.13"
     documentation: OpenShift Version (used for must-gather fallback image tag)
@@ -59,12 +56,14 @@ ref:
   - name: CNV_TARGET_MAJOR_MINOR
     default: "4.21"
     documentation: |-
-      When set, resolves the latest available patch version (e.g. 4.21.8) from the spoke
-      packagemanifest on CNV_CHANNEL and sets CNV_TARGET_VERSION for --upgrade cnv. Leave empty
-      to use CNV_TARGET_VERSION as-is.
+      Fallback: when ${SHARED_DIR}/cnv-target-version is absent, resolves the latest available
+      patch version (e.g. 4.21.0) from the spoke packagemanifest on CNV_CHANNEL.
+      In normal operation this is set by the preceding upgrade-prep step.
   - name: CNV_TARGET_VERSION
     default: "4.21.0"
-    documentation: Target CNV version for --upgrade cnv. Overridden when CNV_TARGET_MAJOR_MINOR is set.
+    documentation: |-
+      Target CNV version for --upgrade cnv. Used as last-resort default when neither
+      ${SHARED_DIR}/cnv-target-version nor CNV_TARGET_MAJOR_MINOR resolution is available.
   - name: CNV_TARGET_IMAGE
     default: ""
     documentation: |-
@@ -75,22 +74,8 @@ ref:
   - name: CNV_CHANNEL
     default: "stable"
     documentation: CNV subscription channel for upgrade (stable, candidate, nightly).
-  - name: CNV_DV_NAMESPACE_PVC_WAIT_TIMEOUT
-    default: "600"
-    documentation: Max seconds to wait for openshift-virtualization-os-images PVCs to reach Bound/idle.
-  - name: CNV_DV_NAMESPACE_PVC_RETRY_WAIT_TIMEOUT
-    default: "300"
-    documentation: Max seconds to retry PVC idle wait after force-deleting stuck PVCs in boot image prep.
-  - name: CNV_BOOT_IMPORT_CRON_UPTODATE_WAIT_TIMEOUT
-    default: "20m"
-    documentation: Max wait per DataImportCron UpToDate condition during boot image prep.
   - name: CNV_TARGET_STORAGE_CLASS
     default: "ocs-storagecluster-ceph-rbd-virtualization"
     documentation: |-
-      StorageClass for CNV boot images and pytest. Pair with deploy-odf ODF_DEFAULT_STORAGE_CLASS
-      set to the same virt SC; deploy-odf must complete before this step.
-  - name: CNV_TARGET_STORAGE_CLASS_WAIT_TIMEOUT
-    default: "5m"
-    documentation: |-
-      Max wait for CNV_TARGET_STORAGE_CLASS to exist before patching default/virt annotations.
-      deploy-odf already waits for ODF readiness; this guards the deploy-odf → CNV tests boundary.
+      StorageClass passed to pytest --storage-class-matrix. Must match the class configured
+      by the preceding interop-tests-openshift-virtualization-upgrade-prep step.
