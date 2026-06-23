@@ -92,9 +92,9 @@ tests:
       CLOUD_PROVIDER: ipi-aws
       CNV_CHANNEL: stable
       CNV_POLICY_CHANNEL: stable
-      CNV_POLICY_INSTALL_MAJOR_MINOR: "4.21"
+      CNV_POLICY_INSTALL_MAJOR_MINOR: "4.20"
       CNV_SOURCE: production
-      CNV_TARGET_MAJOR_MINOR: "4.22"
+      CNV_TARGET_MAJOR_MINOR: "4.21"
       COMPUTE_NODE_TYPE: m6a.2xlarge
       CONTROL_PLANE_INSTANCE_TYPE: m6a.2xlarge
       FIREWATCH_CONFIG: |
