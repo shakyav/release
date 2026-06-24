@@ -317,12 +317,6 @@ function check_pod() {
     oc get pods --all-namespaces
 }
 
-function run_command() {
-    typeset CMD="$1"
-    : "Running command: ${CMD}"
-    eval "${CMD}"
-}
-
 # Setup proxy if it's present in the shared dir
 if test -f "${SHARED_DIR}/proxy-conf.sh"
 then
@@ -332,7 +326,9 @@ fi
 
 OC="run_command_oc"
 
-run_command "oc get machineconfig"
+# Informational listing only — real health gates follow. || true prevents a
+# transient API failure here from aborting the step before the actual checks run.
+oc get machineconfig || true
 
 : "Step #1: Make sure no degraded or updating mcp"
 wait_mcp_continous_success
