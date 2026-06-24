@@ -320,11 +320,11 @@ WaitHppCsiHealthy() {
     true
 }
 
-# Wait for HCO to report Available after OCP upgrade before touching CDI.
-# During OCP upgrade HCO reconciles and may delete+recreate the CDI singleton CR.
+# Wait for HCO to report Available before operating on HCO-managed resources.
 # The spoke-upgrade-healthcheck only verifies OCP ClusterOperators and nodes —
-# it does not wait for CNV/HCO to re-stabilise. If we try to patch CDI before
-# HCO finishes reconciling, the CDI CR will not exist yet (NotFound).
+# it does not wait for CNV/HCO to re-stabilise after the OCP upgrade.
+# Required before Cnv__WaitBootImagesUpToDate (DataImportCrons managed by HCO/CDI)
+# and SlowDownHcoWorkloadUpdateForUpgradeTest (patches hyperconverged CR directly).
 WaitCnvHcoAvailable() {
     typeset -r ns="openshift-cnv"
     typeset -i waitMaxSec=600  # 10 min — HCO reconciliation after OCP upgrade
@@ -339,8 +339,7 @@ WaitCnvHcoAvailable() {
                 2>/dev/null || true)"
             [[ "${cond}" == "True" ]] && break
             (( SECONDS >= waitMaxSec )) && {
-                printf 'ERROR: HyperConverged not Available after %ds — CDI CR may be absent\n' \
-                    "${waitMaxSec}" >&2
+                printf 'ERROR: HyperConverged not Available after %ds\n' "${waitMaxSec}" >&2
                 oc get hyperconverged kubevirt-hyperconverged -n "${ns}" -o yaml \
                     > "${ARTIFACT_DIR}/hco-not-available.yaml" 2>/dev/null || true
                 exit 1
@@ -348,7 +347,7 @@ WaitCnvHcoAvailable() {
             : "HyperConverged Available=${cond:-<empty>}; waiting (${SECONDS}/${waitMaxSec}s)"
             sleep "${pollIntervalSec}"
         done
-        : "HyperConverged Available=True — CDI CR has been reconciled"
+        : "HyperConverged Available=True"
         true
     )
     true
@@ -553,16 +552,6 @@ WaitOdfStorageClusterHealthy
 WaitOdfCsiHealthy
 WaitHppCsiHealthy
 WaitCnvHcoAvailable
-
-# Disable CDI preallocation globally. After an OCP upgrade the ODF/Ceph cluster is
-# recovering from OSD restarts and PG rebalancing. With the default preallocation=true
-# the CDI importer zero-fills the entire block device (e.g. 70 GiB for Windows images)
-# under a Ceph cluster that is still under recovery I/O pressure, causing the qemu-img
-# conversion to stall and exceed the 30-minute DV wait timeout in the test fixtures.
-# Disabling preallocation skips the zero-fill phase so only actual image data is written.
-# WaitCnvHcoAvailable above ensures HCO has finished reconciling and the CDI CR exists.
-Retry 60 10 oc patch cdi cdi --type merge -p '{"spec":{"config":{"preallocation":false}}}'
-: "CDI preallocation disabled to speed up DV imports after OCP upgrade"
 
 printf '%s\n' 'wait_only' > "${ARTIFACT_DIR}/cnv-boot-image-prep-mode.txt"
 Cnv__WaitBootImagesUpToDate
