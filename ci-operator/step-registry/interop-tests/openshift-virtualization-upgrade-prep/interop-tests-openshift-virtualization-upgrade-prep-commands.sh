@@ -122,23 +122,23 @@ Cnv__WaitNamespacePvcsIdle() {
     typeset -i wMax="${1:?}"; (($#)) && shift
     (
         typeset -i wInt=10
-        typeset pending=''
+        typeset pending
         SECONDS=0
+        # Query before entering the loop so the until condition reflects real
+        # cluster state on the very first check (pending='' would exit immediately).
+        pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
+            | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
         until [[ -z "${pending}" ]]; do
-            pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
-                | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
-            if [[ -z "${pending}" ]] \
-                && [[ "$(oc get pvc -n "${ns}" -o jsonpath-as-json='{.items}' 2>/dev/null | jq 'length')" -eq 0 ]]; then
-                break
-            fi
             if (( SECONDS >= wMax )); then
                 oc get pvc -n "${ns}" -o wide \
                     > "${ARTIFACT_DIR}/cnv-stuck-pvcs-${ns}.txt" || true
                 : "PVCs still not idle in ${ns} after ${wMax}s: ${pending:-<see artifact>}"
                 exit 1
             fi
-            : "Waiting for PVCs in ${ns} to finish delete (${SECONDS}/${wMax}s)"
+            : "Waiting for PVCs in ${ns} to be idle (${SECONDS}/${wMax}s)"
             sleep "${wInt}"
+            pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
+                | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
         done
         true
     )
