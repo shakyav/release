@@ -10,7 +10,7 @@ ref:
     down HCO workload update so VMIs remain outdated for observability metric tests.
   from: cli
   commands: interop-tests-openshift-virtualization-upgrade-prep-commands.sh
-  timeout: 2h0m0s
+  timeout: 2h30m0s
   grace_period: 5m
   resources:
     requests:
