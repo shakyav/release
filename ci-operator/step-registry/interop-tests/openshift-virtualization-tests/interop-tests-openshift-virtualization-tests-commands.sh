@@ -13,10 +13,10 @@ debug_on_exit() {
   local lockfile=/tmp/debug_marker
   set +e
 
-  if [[ (${execution_time} -lt ${debug_threshold}) || ${exit_code} -ne 0 ]]; then
+  if (( exit_code != 0 )); then
     echo
     echo "--------------------------------------------------------------------------------"
-    echo " SCRIPT EXITED PREMATURELY (runtime: ${execution_time}s) "
+    echo " SCRIPT EXITED WITH FAILURE (runtime: ${execution_time}s) "
     echo "--------------------------------------------------------------------------------"
     echo "Entering debug sleep. You can now inspect the system state."
     echo "Remove the file: ${lockfile}, to continue script execution."
@@ -247,7 +247,7 @@ function cnv::reimport_datavolumes() {
   cnv::toggle_common_boot_image_import "false"
   sleep 1
 
-  oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete'
+  oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete' --timeout=10m
   echo "[DEBUG] Delete all DataSources, DataVolumes, VolumeSnapshots and PVCs of CNV default volumes"
   # `oc delete`` command does not account for dependencies or the sequence in which OpenShift resources are managed.
   # So we need to run the following commands in order to avoid issues like:

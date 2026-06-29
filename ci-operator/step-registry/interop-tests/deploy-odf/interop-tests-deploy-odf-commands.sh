@@ -27,15 +27,15 @@ typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
 
 [ -f "${odfQuayCredentialsFile}" ]
 
-# Merge cluster pull secret with ODF Quay credentials; set +x only while decoding pull-secret.
+# Merge cluster pull secret with ODF Quay credentials; disable xtrace inside the
+# process substitution subshell — set +x there is scoped to the subshell so the
+# parent shell's tracing state is not affected; no save/restore needed.
 oc -n openshift-config set data secret/pull-secret \
     --from-file .dockerconfigjson=<(
         jq '. * input' <(
-            [[ $- == *x* ]] && _wasTracing=true || _wasTracing=false
             set +x
             oc -n openshift-config get secret/pull-secret \
                 --template='{{index .data ".dockerconfigjson" | base64decode}}'
-            [[ "${_wasTracing}" == "true" ]] && set -x
         ) "${odfQuayCredentialsFile}"
     )
 
