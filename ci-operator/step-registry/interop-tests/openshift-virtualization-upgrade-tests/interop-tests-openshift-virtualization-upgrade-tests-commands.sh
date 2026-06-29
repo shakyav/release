@@ -119,7 +119,7 @@ MapTestsForComponentReadiness() {
     true
 }
 
-InstallAndVerifyVirtctl() {
+function InstallAndVerifyVirtctl () {
     typeset baseURL
     if ! baseURL="$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}' | tr -d '\n\r')"; then
         exit 1

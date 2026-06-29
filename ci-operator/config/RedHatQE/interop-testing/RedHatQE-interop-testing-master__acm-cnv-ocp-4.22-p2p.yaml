@@ -44,7 +44,7 @@ images:
   items:
   - dockerfile_literal: |
       FROM this-is-ignored
-      RUN dnf install -y git python39
+      RUN dnf install -y git python39 && dnf clean all
     from: cli
     to: cli-with-git
   - dockerfile_literal: |
