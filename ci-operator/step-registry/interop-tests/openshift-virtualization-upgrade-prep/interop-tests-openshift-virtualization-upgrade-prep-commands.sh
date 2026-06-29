@@ -301,6 +301,9 @@ WaitOdfStorageClusterHealthy() {
 # Restart the HPP operator deployment and CSI DaemonSet to flush any stale
 # in-flight volume operation locks that can accumulate after OCP node upgrades
 # (drain/reboot cycle). Mirrors WaitOdfCsiHealthy for the HPP storage stack.
+# Also force-restarts any stuck hpp-pool-* deployments so that the pods remount
+# their ODF-backed PVCs against the freshly restarted CSI node plugin, and then
+# waits for all HPP pool deployments to become available before proceeding.
 # Guard: no-op when HPP is not installed (not all clusters use HPP storage).
 WaitHppCsiHealthy() {
     typeset -r hppNs="openshift-cnv"
@@ -317,6 +320,42 @@ WaitHppCsiHealthy() {
     oc -n "${hppNs}" rollout status "deployment/${hppOperatorDeploy}" --timeout=5m
     oc -n "${hppNs}" rollout restart "daemonset/${hppCsiDs}"
     oc -n "${hppNs}" rollout status "daemonset/${hppCsiDs}" --timeout=10m
+
+    # Rollout restart every hpp-pool-* deployment so each pool pod remounts its
+    # ODF PVC against the freshly restarted CSI node plugin and clears any Ceph
+    # RBD stale locks created by prior OCP upgrade node drain/reboot churn.
+    typeset hppPoolDeploy
+    while read -r hppPoolDeploy; do
+        [[ -z "${hppPoolDeploy}" ]] && continue
+        : "Rollout restarting HPP pool deployment ${hppPoolDeploy}"
+        oc -n "${hppNs}" rollout restart "${hppPoolDeploy}" || true
+    done < <(oc get deployment -n "${hppNs}" -o name 2>/dev/null | grep '/hpp-pool-')
+
+    # Wait for all hpp-pool-* deployments to have at least one available replica.
+    (
+        typeset -i waitMaxSec=600
+        typeset notReady
+        SECONDS=0
+        notReady="$(oc get deployment -n "${hppNs}" --no-headers 2>/dev/null \
+            | awk '/^hpp-pool-/ { split($2,r,"/"); if (r[1]<r[2]) print $1 }')"
+        until [[ -z "${notReady}" ]]; do
+            if (( SECONDS >= waitMaxSec )); then
+                oc get deployment -n "${hppNs}" -o wide 2>/dev/null \
+                    | grep -E 'NAME|hpp-pool' \
+                    > "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" || true
+                oc get pods -n "${hppNs}" -l 'k8s-app=hostpath-provisioner' -o wide 2>/dev/null \
+                    >> "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" || true
+                : "HPP pool deployments not ready after ${waitMaxSec}s: ${notReady}"
+                exit 1
+            fi
+            : "Waiting for HPP pool deployments to be available (${SECONDS}/${waitMaxSec}s): ${notReady}"
+            sleep 15
+            notReady="$(oc get deployment -n "${hppNs}" --no-headers 2>/dev/null \
+                | awk '/^hpp-pool-/ { split($2,r,"/"); if (r[1]<r[2]) print $1 }')"
+        done
+        : "All HPP pool deployments are available"
+        true
+    )
     true
 }
 
