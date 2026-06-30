@@ -14,7 +14,7 @@ eval "$(
     typeset -a _fURL=()
     type -t wget 1>/dev/null && _fURL=(wget -nv -O-) || _fURL=(curl -fsSL)
     "${_fURL[@]}" https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq
+)"; EnsureReqs jq yq
 
 trap '(($?)) || exit 0
     oc get managedcluster -o wide \

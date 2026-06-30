@@ -105,6 +105,7 @@ tests:
               {"step": "cucushift-*", "failure_type": "all", "classification": "Cluster Health Check", "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-install"           , "failure_type": "all"          , "classification": "Spoke cluster Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-uninstall"           , "failure_type": "all"          , "classification": "Spoke cluster Un-Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "interop-tests-deploy-odf"              , "failure_type": "all"          , "classification": "ODF Hub Deployment"                              , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "p2p-acm-cnv-install-policy"           , "failure_type": "all"          , "classification": "CNV installation policy deploy"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-upgrade"       , "failure_type": "all"          , "classification": "Hub OCP Upgrade"                                 , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-spoke-upgrade-prehealthcheck", "failure_type": "all"     , "classification": "Spoke Pre-Upgrade Health Check"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
@@ -131,6 +132,7 @@ tests:
       OCP_VERSION: "4.22"
       ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization
       ODF_OPERATOR_CHANNEL: stable-4.21
+      ODF_VERSION_MAJOR_MINOR: "4.21"
       OPERATORS: |
         [
           {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.16", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
@@ -166,8 +168,9 @@ tests:
     - ref: acm-mch
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
-    - ref: p2p-acm-cnv-install-policy
+    - ref: interop-tests-deploy-odf
     - ref: p2p-install-odf-spokes
+    - ref: p2p-acm-cnv-install-policy
     - ref: cucushift-upgrade-prehealthcheck
     - ref: acm-interop-p2p-cluster-upgrade
     - ref: cucushift-upgrade-healthcheck

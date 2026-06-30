@@ -310,15 +310,17 @@ GetInstalledCnvCsv() {
 }
 
 #=====================
-# ODF virt StorageClass (after CNV operator registers KubeVirt CRDs).
-# When ODF deploy runs later (post-upgrade interop jobs), virt SC is absent here — defer to deploy-odf.
+# ODF virt StorageClass — annotate after all spokes have HyperConverged Available.
+# ODF creates ocs-storagecluster-ceph-rbd-virtualization when it detects the
+# virtualmachines.kubevirt.io CRD. Called after WaitForCNV completes so the virt SC
+# is guaranteed to exist. Skipped when ODF_DEFAULT_STORAGE_CLASS is empty or not the virt SC
+# (e.g. CCLM job which installs ODF after this step).
 #=====================
-# Called per-spoke (with spoke KUBECONFIG) before WaitForCNV to ensure the virt StorageClass
-# is ready and annotated as cluster/kubevirt default before HCO boot-image import completes.
+# Called per-spoke (with spoke KUBECONFIG) after all spokes have HyperConverged Available.
 ConfigureOdfVirtStorageClassDefaults() {
     typeset kubeconfig="${1:?}"
-    typeset -r virtSc="${ODF_DEFAULT_STORAGE_CLASS:-ocs-storagecluster-ceph-rbd-virtualization}"
-    [[ "${virtSc}" == *-ceph-rbd-virtualization ]] || return 0
+    typeset -r virtSc="${ODF_DEFAULT_STORAGE_CLASS}"
+    [[ -n "${virtSc}" && "${virtSc}" == *-ceph-rbd-virtualization ]] || return 0
 
     oc --kubeconfig="${kubeconfig}" wait crd/virtualmachines.kubevirt.io --for=create \
         --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"
@@ -634,12 +636,6 @@ typeset resultFile="" storedRc=""
 resultsDir="$(mktemp -d "${ARTIFACT_DIR}/cnv-policy-wait.XXXXXX")"
 trap 'rm -rf "${resultsDir}"' EXIT
 
-# Per-spoke: wait for KubeVirt CRD and ODF virt StorageClass before HyperConverged wait.
-# This is sequential because ODF annotations must settle before concurrent HCO boot-image imports.
-for ((idx = 0; idx < ${#clusterNamesArr[@]}; idx++)); do
-    ConfigureOdfVirtStorageClassDefaults "${spokeKubeconfigsArr[idx]}"
-done
-
 for ((idx = 0; idx < ${#clusterNamesArr[@]}; idx++)); do
     resultFile="${resultsDir}/cluster-$((idx + 1)).result"
     WaitForCNV "${clusterNamesArr[idx]}" "${spokeKubeconfigsArr[idx]}" "${resultFile}" &
@@ -660,6 +656,15 @@ for ((idx = 0; idx < ${#pidsArr[@]}; idx++)); do
 done
 
 (( failedCount == 0 ))
+
+# Per-spoke: configure virt StorageClass and snapshot defaults after all spokes have CNV Available.
+# ODF creates ocs-storagecluster-ceph-rbd-virtualization when it detects the
+# virtualmachines.kubevirt.io CRD registered by CNV. HyperConverged Available on all spokes
+# guarantees the CRD and virt SC both exist. Sequential so annotations settle before downstream
+# steps (openshift-virtualization-upgrade-prep) begin boot-image operations.
+for ((idx = 0; idx < ${#clusterNamesArr[@]}; idx++)); do
+    ConfigureOdfVirtStorageClassDefaults "${spokeKubeconfigsArr[idx]}"
+done
 
 # When pinned: remove startingCSV from all spoke subscriptions and from the ACM policy so
 # downstream CNV upgrade steps can create a new InstallPlan. installPlanApproval stays Manual

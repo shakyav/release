@@ -39,7 +39,7 @@ eval "$(
     typeset -a _fURL=()
     type -t wget 1>/dev/null && _fURL=(wget -nv -O-) || _fURL=(curl -fsSL)
     "${_fURL[@]}" https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq
+)"; EnsureReqs jq yq
 
 #=====================
 # Parse leased resources into array
@@ -411,8 +411,7 @@ ocEOF
     oc label secret acm-aws-secret \
         cluster.open-cluster-management.io/type=aws \
         cluster.open-cluster-management.io/credentials="" \
-        -n "${clusterName}" --overwrite \
-        --dry-run=client -o yaml --save-config | oc apply -f -
+        -n "${clusterName}" --overwrite
 
     # Create pull-secret for accessing container registries
     : "Creating pull-secret"

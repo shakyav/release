@@ -111,6 +111,17 @@ periodics:
     ci.openshift.io/generator: prowgen
     pj-rehearse.openshift.io/can-be-rehearsed: "true"
   name: periodic-ci-RedHatQE-interop-testing-master-acm-cnv-ocp-4.22-p2p-lp-interop-aws
+  reporter_config:
+    slack:
+      channel: '#forum-p2p-cspi'
+      job_states_to_report:
+      - success
+      - failure
+      - error
+      report_template: '{{if eq .Status.State "success"}} :slack-green: Job *{{.Spec.Job}}*
+        ended with *{{.Status.State}}*. <{{.Status.URL}}|View logs> {{else}} :failed:
+        Job *{{.Spec.Job}}* ended with *{{.Status.State}}*. <{{.Status.URL}}|View
+        logs> {{end}}'
   spec:
     containers:
     - args:
@@ -194,6 +205,17 @@ periodics:
     ci.openshift.io/generator: prowgen
     pj-rehearse.openshift.io/can-be-rehearsed: "true"
   name: periodic-ci-RedHatQE-interop-testing-master-acm-virt-ocp4.22-p2p-cclm-liv-mig-aws-p2p-lp-interop
+  reporter_config:
+    slack:
+      channel: '#forum-p2p-cspi'
+      job_states_to_report:
+      - success
+      - failure
+      - error
+      report_template: '{{if eq .Status.State "success"}} :slack-green: Job *{{.Spec.Job}}*
+        ended with *{{.Status.State}}*. <{{.Status.URL}}|View logs> {{else}} :failed:
+        Job *{{.Spec.Job}}* ended with *{{.Status.State}}*. <{{.Status.URL}}|View
+        logs> {{end}}'
   spec:
     containers:
     - args:

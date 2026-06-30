@@ -179,9 +179,20 @@ WaitStorageClusterAndNoobaaReady() {
 }
 
 # ConfigureDefaultStorage — set virtualization SC and snapshot class as cluster defaults.
+# When ODF_DEFAULT_STORAGE_CLASS ends in -ceph-rbd-virtualization the SC only exists after
+# the KubeVirt virtualmachines.kubevirt.io CRD is registered (by CNV). If CNV is installed
+# after this step (the normal p2p upgrade sequence), the SC will not exist yet — skip the
+# annotation here; the subsequent p2p-acm-cnv-install-policy step's ConfigureOdfVirtStorageClassDefaults
+# waits for and annotates the virt SC once ODF creates it in response to the KubeVirt CRD.
 ConfigureDefaultStorage() {
     typeset kubeconfig="${1:?}"
     typeset scName=""
+
+    if [[ "${ODF_DEFAULT_STORAGE_CLASS}" == *-ceph-rbd-virtualization ]] && \
+       ! oc --kubeconfig="${kubeconfig}" get storageclass "${ODF_DEFAULT_STORAGE_CLASS}" 1>/dev/null; then
+        : "Virt StorageClass ${ODF_DEFAULT_STORAGE_CLASS} not present yet (CNV not installed); skipping default annotation — will be set by p2p-acm-cnv-install-policy"
+        return 0
+    fi
 
     while IFS= read -r scName; do
         [[ -n "${scName}" ]] || continue
