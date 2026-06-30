@@ -35,7 +35,7 @@ WriteSpokeHealthcheckFailureDiagnostics() {
             2>&1 || true
         unhealthyMcp="$(oc get machineconfigpools \
             -o 'custom-columns=NAME:metadata.name,UPDATING:status.conditions[?(@.type=="Updating")].status,DEGRADED:status.conditions[?(@.type=="Degraded")].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount' \
-            --no-headers 2>/dev/null | grep -Ev '[[:space:]]False[[:space:]]+False[[:space:]]+0[[:space:]]*$' || true)"
+            --no-headers 2>&1 | grep -Ev '[[:space:]]False[[:space:]]+False[[:space:]]+0[[:space:]]*$' || true)"
         if [[ -n "${unhealthyMcp}" ]]; then
             echo
             echo "=== oc describe unhealthy MCPs ==="
@@ -54,7 +54,7 @@ WriteSpokeHealthcheckFailureDiagnostics() {
             [[ -n "${nodeName}" ]] || continue
             echo "--- ${nodeName} ---"
             oc describe node "${nodeName}" 2>&1 || true
-        done < <(oc get nodes --no-headers 2>/dev/null | awk '$2 != "Ready" {print $1}' || true)
+        done < <(oc get nodes --no-headers 2>&1 | awk '$2 != "Ready" {print $1}' || true)
         echo
         echo "=== oc get clusteroperators ==="
         oc get clusteroperators 2>&1 || true
@@ -64,7 +64,7 @@ WriteSpokeHealthcheckFailureDiagnostics() {
             [[ -n "${coName}" ]] || continue
             echo "--- ${coName} ---"
             oc describe clusteroperator "${coName}" 2>&1 || true
-        done < <(oc get clusteroperators --no-headers 2>/dev/null | awk '$3 == "False" || $4 == "True" || $5 == "True" {print $1}' || true)
+        done < <(oc get clusteroperators --no-headers 2>&1 | awk '$3 == "False" || $4 == "True" || $5 == "True" {print $1}' || true)
         echo
         echo "=== oc get pods -n openshift-machine-config-operator ==="
         oc get pods -n openshift-machine-config-operator -o wide 2>&1 || true
@@ -74,17 +74,13 @@ WriteSpokeHealthcheckFailureDiagnostics() {
 }
 
 SpokeHealthcheckFailureCleanup() {
-    typeset ret=$?
+    typeset -i ret=$?
     if (( ret != 0 )); then
         WriteSpokeHealthcheckFailureDiagnostics || true
     fi
     return "${ret}"
 }
 trap SpokeHealthcheckFailureCleanup EXIT
-
-set -o nounset
-set -o errexit
-set -o pipefail
 
 function run_command_oc() {
     typeset -i try=0 max=40; typeset ret_val
@@ -211,7 +207,7 @@ function check_mcp() {
     oc get machineconfigpools -o custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?\(@.type==\"Updating\"\)].status --no-headers > "${tmp_output}" || true
     # using the size of output to determinate if oc command is executed successfully
     if [[ -s "${tmp_output}" ]]; then
-        updating_mcp=$(cat "${tmp_output}" | grep -v "False")
+        updating_mcp=$(grep -v "False" "${tmp_output}" || true)
         if [[ -n "${updating_mcp}" ]]; then
             : "Some mcp is updating"
             echo "${updating_mcp}"
@@ -226,7 +222,7 @@ function check_mcp() {
     oc get machineconfigpools -o custom-columns=NAME:metadata.name,CONFIG:spec.configuration.name,UPDATING:status.conditions[?\(@.type==\"Updating\"\)].status,DEGRADED:status.conditions[?\(@.type==\"Degraded\"\)].status,DEGRADEDMACHINECOUNT:status.degradedMachineCount --no-headers > "${tmp_output}" || true
     # using the size of output to determinate if oc command is executed successfully
     if [[ -s "${tmp_output}" ]]; then
-        unhealthy_mcp=$(cat "${tmp_output}" | grep -v "False.*False.*0")
+        unhealthy_mcp=$(grep -v "False.*False.*0" "${tmp_output}" || true)
         if [[ -n "${unhealthy_mcp}" ]]; then
             : "Detected unhealthy mcp"
             echo "${unhealthy_mcp}"
@@ -236,10 +232,11 @@ function check_mcp() {
             oc get machineconfigpools
             unhealthy_mcp_names=$(echo "${unhealthy_mcp}" | awk '{print $1}')
             : "Using oc describe to check status of unhealthy mcp"
-            for mcp_name in ${unhealthy_mcp_names}; do
-              : "Name: ${mcp_name}"
-              oc describe mcp "${mcp_name}" || echo >&2 "oc describe mcp ${mcp_name} failed"
-            done
+            while read -r mcp_name; do
+                [[ -n "${mcp_name}" ]] || continue
+                : "Name: ${mcp_name}"
+                oc describe mcp "${mcp_name}" || echo >&2 "oc describe mcp ${mcp_name} failed"
+            done <<< "${unhealthy_mcp_names}"
             return 2
         fi
     else
@@ -295,9 +292,11 @@ function wait_mcp_continous_success() {
 }
 
 function check_node() {
-    typeset node_number ready_number
-    node_number=$(${OC} get node |grep -vc STATUS)
-    ready_number=$(${OC} get node |grep -v STATUS | awk '$2 == "Ready"' | wc -l)
+    typeset -i node_number ready_number
+    node_number=$(oc get node -o json | jq '.items | length')
+    ready_number=$(oc get node -o json | jq '[.items[] | select(
+        any(.status.conditions[]; .type == "Ready" and .status == "True")
+    )] | length')
     if (( node_number == ready_number )); then
         : "All nodes status check PASSED"
         return 0
@@ -306,7 +305,9 @@ function check_node() {
             echo >&2 "No any ready node"
         else
             echo >&2 "We found failed node"
-            oc get node |grep -v STATUS | awk '$2 != "Ready"'
+            oc get node -o json | jq -r '.items[] |
+                select(any(.status.conditions[]; .type == "Ready" and .status == "True") | not) |
+                .metadata.name'
         fi
         return 1
     fi
@@ -334,7 +335,7 @@ oc get machineconfig || true
 wait_mcp_continous_success
 
 : "Step #2: check all cluster operators get stable and ready"
-wait_clusteroperators_continous_success
+wait_clusteroperators_continous_success,
 
 : "Step #3: Make sure every machine is in 'Ready' status"
 check_node

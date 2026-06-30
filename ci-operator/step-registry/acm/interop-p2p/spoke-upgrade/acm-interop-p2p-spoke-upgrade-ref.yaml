@@ -14,7 +14,7 @@ ref:
   - name: "release:target"
     env: OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE
   env:
-  - name: TARGET_CHANNEL
+  - name: SPOKE_CLUSTER_UPGRADE_TARGET_CHANNEL
     default: ""
     documentation: OCP update channel for the spoke cluster (e.g. candidate-4.21). Leave empty to skip channel patching.
   - name: ACM_MANIFESTWORK_NAME

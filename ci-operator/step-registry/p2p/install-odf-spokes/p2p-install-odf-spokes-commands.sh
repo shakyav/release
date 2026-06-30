@@ -213,7 +213,7 @@ InstallOdfOnSpoke() {
     typeset startingCsv="" startingCsvYaml="" ogName=""
 
     (
-        oc --kubeconfig="${kubeconfig}" apply -f - <<EOF
+        oc --kubeconfig="${kubeconfig}" apply --save-config -f - <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -229,7 +229,7 @@ EOF
         done < <(oc --kubeconfig="${kubeconfig}" get operatorgroup -n "${ODF_INSTALL_NAMESPACE}" \
             -o json | jq -r '.items[].metadata.name' || true)
 
-        oc --kubeconfig="${kubeconfig}" apply -f - <<EOF
+        oc --kubeconfig="${kubeconfig}" apply --save-config -f - <<EOF
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
@@ -254,7 +254,7 @@ EOF
         done < <(oc --kubeconfig="${kubeconfig}" get csv -n "${ODF_INSTALL_NAMESPACE}" \
             -o json | jq -r '.items[].metadata.name' || true)
 
-        oc --kubeconfig="${kubeconfig}" apply -f - <<EOF
+        oc --kubeconfig="${kubeconfig}" apply --save-config -f - <<EOF
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -284,7 +284,7 @@ EOF
         oc --kubeconfig="${kubeconfig}" wait --for=create crd/storageclusters.ocs.openshift.io \
             --timeout=5m
 
-        oc --kubeconfig="${kubeconfig}" apply -f - <<EOF
+        oc --kubeconfig="${kubeconfig}" apply --save-config -f - <<EOF
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
 metadata:

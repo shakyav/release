@@ -23,6 +23,10 @@ base_images:
     name: "2.15"
     namespace: acm-qe
     tag: multicluster-observability-operator-opp
+  openshift-virtualization-tests:
+    name: openshift-virtualization-tests
+    namespace: ci
+    tag: latest
   virtctl:
     name: "4.21"
     namespace: ocp
@@ -97,17 +101,19 @@ tests:
               {"step": "acm-interop-p2p-cluster-install"           , "failure_type": "all"          , "classification": "Spoke cluster Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-interop-p2p-cluster-uninstall"           , "failure_type": "all"          , "classification": "Spoke cluster Un-Installation"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "p2p-acm-cnv-install-policy"           , "failure_type": "all"          , "classification": "CNV installation policy deploy"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-cluster-upgrade"       , "failure_type": "all"          , "classification": "Hub OCP Upgrade"                                 , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade-prehealthcheck", "failure_type": "all"     , "classification": "Spoke Pre-Upgrade Health Check"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade"         , "failure_type": "all"          , "classification": "Spoke OCP Upgrade"                               , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "acm-interop-p2p-spoke-upgrade-healthcheck", "failure_type": "all"        , "classification": "Spoke Post-Upgrade Health Check"                 , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
+              {"step": "*openshift-virtualization-upgrade-prep"  , "failure_type": "all"          , "classification": "CNV Upgrade Prep Failure"  , "group": { "name" : "lp-tests", "priority" : 2}, "jira_additional_labels": ["!default"]                                                                                    , "jira_component": ["CNV Virt-Cluster"]},
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "test_failure" , "classification": "CNV Tests Failure"         , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default", "interop-tests"], "jira_assignee": "kbidarka@redhat.com", "jira_component": ["CNV Virt-Cluster"]},
               {"step": "*openshift-virtualization-upgrade-tests" , "failure_type": "pod_failure" , "classification": "CNV Tests Failure"          , "group": { "name" : "lp-tests", "priority" : 3}, "jira_additional_labels": ["!default"]                 , "jira_assignee": "!default"           , "jira_component": ["CNV Virt-Cluster"]},
-              {"step": "acm-interop-p2p-spoke-upgrade"           , "failure_type": "all"          , "classification": "Spoke cluster Upgrade"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
-              {"step": "acm-interop-p2p-spoke-upgrade-healthcheck" , "failure_type": "all"          , "classification": "Spoke cluster Upgrade Health Check"     , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
-              {"step": "acm-interop-p2p-cluster-upgrade"           , "failure_type": "all"          , "classification": "Cluster Upgrade"                  , "group": { "name" : "cluster" , "priority" : 2}, "jira_additional_labels": ["!default"]                                           },
               {"step": "acm-fetch-managed-clusters", "failure_type": "all", "classification": "ACM cluster failure", "jira_project": "!default", "group": {"name": "opp-tests", "priority": 4}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default"]},
               {"step": "acm-tests-observability", "failure_type": "all", "classification": "ACM OBS testcase failure", "jira_project": "!default", "group": {"name": "opp-tests", "priority": 5}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default","interop-tests"]},
               {"step": "acm-tests-grc", "failure_type": "all", "classification": "ACM GRC testcase failure", "jira_project": "!default", "group": {"name": "interop-p2p-tests", "priority": 5}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default","interop-tests"]},
               {"step": "acm-tests-alc", "failure_type": "all", "classification": "ACM ALC testcase failure", "jira_project": "!default", "group": {"name": "interop-p2p-tests", "priority": 5}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default","interop-tests"]},
               {"step": "acm-mch", "failure_type": "all", "classification": "ACM MCH install", "jira_project": "!default", "group": {"name": "interop-p2p-tests", "priority": 2}, "jira_epic": "!default", "jira_assignee": "!default", "jira_additional_labels": ["!default"]},
-              {"step": "*deploy-odf"                     , "failure_type": "all" , "classification": "ODF Deployment"                     , "group": { "name" : "lp-tests", "priority" : 1}, "jira_additional_labels": ["!default"], "jira_project": "DFBUGS", "jira_assignee": "ebenahar@redhat.com" }
+              {"step": "p2p-install-odf-spokes"            , "failure_type": "all" , "classification": "ODF Spoke Deployment"                , "group": { "name" : "lp-tests", "priority" : 1}, "jira_additional_labels": ["!default"], "jira_project": "DFBUGS", "jira_assignee": "ebenahar@redhat.com" }
             ]
         }
       FIREWATCH_CONFIG_FILE_PATH: https://raw.githubusercontent.com/CSPI-QE/cspi-utils/main/firewatch-base-configs/aws-ipi/lp-interop.json
@@ -119,13 +125,12 @@ tests:
       FIREWATCH_FAIL_WITH_TEST_FAILURES: "true"
       OCP_VERSION: "4.20"
       ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization
-      ODF_DEPLOY_ON_SPOKE: "true"
       ODF_OPERATOR_CHANNEL: stable-4.20
-      ODF_VERSION_MAJOR_MINOR: "4.20"
       OPERATORS: |
         [
           {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.15", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
         ]
+      SPOKE_CLUSTER_UPGRADE_TARGET_CHANNEL: candidate-4.21
       USER_TAGS: |
         scenario acm-cnv-p2p
     leases:
@@ -157,10 +162,14 @@ tests:
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
     - ref: p2p-acm-cnv-install-policy
-    - ref: p2p-cnv-pre-upgrade
+    - ref: p2p-install-odf-spokes
+    - ref: cucushift-upgrade-prehealthcheck
     - ref: acm-interop-p2p-cluster-upgrade
+    - ref: cucushift-upgrade-healthcheck
+    - ref: acm-interop-p2p-spoke-upgrade-prehealthcheck
     - ref: acm-interop-p2p-spoke-upgrade
     - ref: acm-interop-p2p-spoke-upgrade-healthcheck
+    - ref: interop-tests-openshift-virtualization-upgrade-prep
     - ref: interop-tests-openshift-virtualization-upgrade-tests
     - ref: acm-tests-observability
     - ref: acm-tests-grc

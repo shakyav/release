@@ -122,9 +122,9 @@ EnsurePinnedCnvSubscriptionOnSpoke() {
     (
         SECONDS=0
         until oc --kubeconfig="${kubeconfig}" \
-                get namespace openshift-cnv &>/dev/null \
+                get namespace openshift-cnv 1>/dev/null \
             && oc --kubeconfig="${kubeconfig}" \
-                get operatorgroup openshift-cnv -n openshift-cnv &>/dev/null; do
+                get operatorgroup openshift-cnv -n openshift-cnv 1>/dev/null; do
             if (( SECONDS >= waitTimeoutSeconds )); then
                 : "Timeout waiting for openshift-cnv namespace/OperatorGroup on ${clusterName}"
                 exit 1
@@ -285,7 +285,7 @@ ResolveCnvCsvForVersion() {
 # Installed CNV CSV on the spoke: hco-operatorhub subscription, else package match, else Succeeded CSV.
 GetInstalledCnvCsv() {
     typeset csv
-    if oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv &>/dev/null; then
+    if oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv 1>/dev/null; then
         csv="$(oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv \
             -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
         if [[ -n "${csv}" ]]; then
@@ -341,14 +341,14 @@ ConfigureOdfVirtStorageClassDefaults() {
         storageclass.kubevirt.io/is-default-virt-class=true --overwrite
 
     typeset -r snapClass='ocs-storagecluster-rbdplugin-snapclass'
-    if oc --kubeconfig="${kubeconfig}" get volumesnapshotclass "${snapClass}" &>/dev/null; then
+    if oc --kubeconfig="${kubeconfig}" get volumesnapshotclass "${snapClass}" 1>/dev/null; then
         oc --kubeconfig="${kubeconfig}" get volumesnapshotclass -o name \
             | xargs -rI{} oc --kubeconfig="${kubeconfig}" annotate {} snapshot.storage.kubernetes.io/is-default-class- --overwrite
         oc --kubeconfig="${kubeconfig}" annotate volumesnapshotclass "${snapClass}" \
             snapshot.storage.kubernetes.io/is-default-class=true --overwrite
         typeset -r snapCtrlNs='openshift-cluster-storage-operator'
         typeset -r snapDeploy='csi-snapshot-controller'
-        if oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" get deployment "${snapDeploy}" &>/dev/null; then
+        if oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" get deployment "${snapDeploy}" 1>/dev/null; then
             oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" rollout restart "deployment/${snapDeploy}"
             oc --kubeconfig="${kubeconfig}" -n "${snapCtrlNs}" rollout status "deployment/${snapDeploy}" --timeout=5m
         fi

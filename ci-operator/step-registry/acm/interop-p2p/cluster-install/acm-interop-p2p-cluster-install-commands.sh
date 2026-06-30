@@ -412,7 +412,7 @@ ocEOF
         cluster.open-cluster-management.io/type=aws \
         cluster.open-cluster-management.io/credentials="" \
         -n "${clusterName}" --overwrite \
-        --dry-run=client -o yaml | oc apply -f -
+        --dry-run=client -o yaml --save-config | oc apply -f -
 
     # Create pull-secret for accessing container registries
     : "Creating pull-secret"

@@ -61,7 +61,7 @@ ApplyNetworkMap() {
                     destination: {name: $dstProv, namespace: $ns}
                 }
             }
-        }' | oc apply -f -
+        }' | oc apply --save-config -f -
 }
 
 # ApplyStorageMap — map source ODF virt StorageClass to destination (RWX required for live migration).
@@ -88,7 +88,7 @@ ApplyStorageMap() {
                     destination: {name: $dstProv, namespace: $ns}
                 }
             }
-        }' | oc apply -f -
+        }' | oc apply --save-config -f -
 }
 
 # WaitMapReady — wait until MTV validates network/storage mapping against provider inventory.

@@ -15,9 +15,6 @@ ref:
       cpu: 100m
       memory: 100Mi
   env:
-  - name: KUBECONFIG
-    default: ${SHARED_DIR}/managed-cluster-kubeconfig
-    documentation: ACM managed spoke admin kubeconfig written by acm-interop-p2p-cluster-install.
   - name: ACM_SPOKE_MCP_MINUTES_PER_NODE
     default: "35"
     documentation: Minutes of MCP wait budget per node (cucushift default 20). Rehearsal #2065916519451201536 needed ~33m/node on a 6-node spoke.

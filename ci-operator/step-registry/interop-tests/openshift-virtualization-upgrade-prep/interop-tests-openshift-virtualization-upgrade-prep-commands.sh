@@ -17,8 +17,10 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 eval "$(
-    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq
+    typeset -a _fURL=()
+    type -t wget 1>/dev/null && _fURL=(wget -nv -O-) || _fURL=(curl -fsSL)
+    "${_fURL[@]}" https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+)"; EnsureReqs jq yq
 
 # Resolve the FIRST (lowest) kubevirt-hyperconverged x.y.z for major.minor from the spoke catalog.
 # Used for one-hop upgrade tests where the target is the initial z-stream entry point for the minor
@@ -84,7 +86,7 @@ Cnv__WaitRhelBootImportCronsUpToDate() {
         while read -r cronName; do
             [[ -n "${cronName}" ]] && bootCrons+=("${cronName}")
         done < <(
-            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
                 | grep -E '^(rhel[0-9]+|windows[0-9]*)-image-cron$' || true
         )
         ((${#bootCrons[@]})) && break
@@ -126,8 +128,8 @@ Cnv__WaitNamespacePvcsIdle() {
         SECONDS=0
         # Query before entering the loop so the until condition reflects real
         # cluster state on the very first check (pending='' would exit immediately).
-        pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
-            | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
+        pending="$(oc get pvc -n "${ns}" -o jsonpath-as-json='{.items[*]}' \
+            | jq -r '.[] | select(.status.phase | test("Terminating|Pending|Lost")) | .metadata.name' || true)"
         until [[ -z "${pending}" ]]; do
             if (( SECONDS >= wMax )); then
                 oc get pvc -n "${ns}" -o wide \
@@ -137,8 +139,8 @@ Cnv__WaitNamespacePvcsIdle() {
             fi
             : "Waiting for PVCs in ${ns} to be idle (${SECONDS}/${wMax}s)"
             sleep "${wInt}"
-            pending="$(oc get pvc -n "${ns}" --no-headers 2>/dev/null \
-                | awk '$2 ~ /Terminating|Pending|Lost/ {print $1}' || true)"
+            pending="$(oc get pvc -n "${ns}" -o jsonpath-as-json='{.items[*]}' \
+                | jq -r '.[] | select(.status.phase | test("Terminating|Pending|Lost")) | .metadata.name' || true)"
         done
         true
     )
@@ -146,17 +148,17 @@ Cnv__WaitNamespacePvcsIdle() {
 }
 
 Cnv__ForceDeleteStuckPvcs() {
-    typeset ns="${1:?}"
+    typeset ns="${1:?}"; (($#)) && shift
     typeset pvcName
-    for pvcName in $(
-        oc get pvc -n "${ns}" \
-            -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}' \
-            2>/dev/null
-    ); do
+    while read -r pvcName; do
+        [[ -n "${pvcName}" ]] || continue
         : "Removing finalizers from stuck PVC ${ns}/${pvcName}"
         oc patch pvc "${pvcName}" -n "${ns}" \
             -p '{"metadata":{"finalizers":null}}' --type=merge || true
-    done
+    done < <(
+        oc get pvc -n "${ns}" -o jsonpath-as-json='{.items[*]}' \
+            | jq -r '.[] | select(.metadata.deletionTimestamp != null) | .metadata.name' || true
+    )
     true
 }
 
@@ -191,7 +193,7 @@ ConfigureOdfVolumeSnapshotClass() {
     typeset -r snapCtrlNs='openshift-cluster-storage-operator'
     typeset -r snapDeploy='csi-snapshot-controller'
 
-    if ! oc get volumesnapshotclass "${snapClass}" &>/dev/null; then
+    if ! oc get volumesnapshotclass "${snapClass}" 1>/dev/null; then
         : "VolumeSnapshotClass ${snapClass} not found; skipping default snapshot class setup"
         return 0
     fi
@@ -201,7 +203,7 @@ ConfigureOdfVolumeSnapshotClass() {
     oc annotate volumesnapshotclass "${snapClass}" \
         snapshot.storage.kubernetes.io/is-default-class=true --overwrite
 
-    if oc -n "${snapCtrlNs}" get deployment "${snapDeploy}" &>/dev/null; then
+    if oc -n "${snapCtrlNs}" get deployment "${snapDeploy}" 1>/dev/null; then
         oc -n "${snapCtrlNs}" rollout restart "deployment/${snapDeploy}"
         oc -n "${snapCtrlNs}" rollout status "deployment/${snapDeploy}" --timeout=5m
     fi
@@ -211,7 +213,7 @@ ConfigureOdfVolumeSnapshotClass() {
 EnsureCdiStorageProfileRwx() {
     typeset storageClassName="${1:?}"; (($#)) && shift
 
-    if ! oc get storageprofile "${storageClassName}" &>/dev/null; then
+    if ! oc get storageprofile "${storageClassName}" 1>/dev/null; then
         : "StorageProfile ${storageClassName} not found; skipping RWX patch"
         return 0
     fi
@@ -264,7 +266,7 @@ WaitOdfStorageClusterHealthy() {
         : "Waiting for ODF StorageCluster ${scName} to be Ready (max ${waitMaxSec}s)"
         until [[ "${scPhase}" == "Ready" ]]; do
             scPhase="$(oc get storagecluster "${scName}" -n "${odfNs}" \
-                -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+                -o jsonpath='{.status.phase}' || true)"
             [[ "${scPhase}" == "Ready" ]] && break
             (( SECONDS >= waitMaxSec )) && {
                 oc get storagecluster "${scName}" -n "${odfNs}" -o yaml \
@@ -281,7 +283,7 @@ WaitOdfStorageClusterHealthy() {
         : "Waiting for CephCluster health to be HEALTH_OK or HEALTH_WARN"
         until [[ "${cephHealth}" == "HEALTH_OK" || "${cephHealth}" == "HEALTH_WARN" ]]; do
             cephHealth="$(oc get cephcluster -n "${odfNs}" \
-                -o jsonpath='{.items[0].status.ceph.health}' 2>/dev/null || true)"
+                -o jsonpath='{.items[0].status.ceph.health}' || true)"
             [[ "${cephHealth}" == "HEALTH_OK" || "${cephHealth}" == "HEALTH_WARN" ]] && break
             (( SECONDS >= waitMaxSec )) && {
                 oc get cephcluster -n "${odfNs}" -o yaml \
@@ -310,7 +312,7 @@ WaitHppCsiHealthy() {
     typeset -r hppOperatorDeploy="hostpath-provisioner-operator"
     typeset -r hppCsiDs="hostpath-provisioner-csi"
 
-    if ! oc get deployment "${hppOperatorDeploy}" -n "${hppNs}" &>/dev/null; then
+    if ! oc get deployment "${hppOperatorDeploy}" -n "${hppNs}" 1>/dev/null; then
         : "HPP operator not present in ${hppNs} — skipping WaitHppCsiHealthy"
         return 0
     fi
@@ -329,29 +331,33 @@ WaitHppCsiHealthy() {
         [[ -z "${hppPoolDeploy}" ]] && continue
         : "Rollout restarting HPP pool deployment ${hppPoolDeploy}"
         oc -n "${hppNs}" rollout restart "${hppPoolDeploy}" || true
-    done < <(oc get deployment -n "${hppNs}" -o name 2>/dev/null | grep '/hpp-pool-')
+    done < <(oc get deployment -n "${hppNs}" -o name | grep '/hpp-pool-' || true)
 
     # Wait for all hpp-pool-* deployments to have at least one available replica.
     (
         typeset -i waitMaxSec=600
         typeset notReady
         SECONDS=0
-        notReady="$(oc get deployment -n "${hppNs}" --no-headers 2>/dev/null \
-            | awk '/^hpp-pool-/ { split($2,r,"/"); if (r[1]<r[2]) print $1 }')"
+        # Select hpp-pool-* deployments where readyReplicas < replicas using jq on the JSON list.
+        notReady="$(oc get deployment -n "${hppNs}" -o json \
+            | jq -r '.items[] | select(.metadata.name | startswith("hpp-pool-"))
+                | select((.status.readyReplicas // 0) < (.spec.replicas // 1))
+                | .metadata.name' || true)"
         until [[ -z "${notReady}" ]]; do
             if (( SECONDS >= waitMaxSec )); then
-                oc get deployment -n "${hppNs}" -o wide 2>/dev/null \
-                    | grep -E 'NAME|hpp-pool' \
-                    > "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" || true
-                oc get pods -n "${hppNs}" -l 'k8s-app=hostpath-provisioner' -o wide 2>/dev/null \
-                    >> "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" || true
+                oc get deployment -n "${hppNs}" -o wide \
+                    > "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" 2>&1 || true
+                oc get pods -n "${hppNs}" -l 'k8s-app=hostpath-provisioner' -o wide \
+                    >> "${ARTIFACT_DIR}/hpp-pool-deployments-stuck.txt" 2>&1 || true
                 : "HPP pool deployments not ready after ${waitMaxSec}s: ${notReady}"
                 exit 1
             fi
             : "Waiting for HPP pool deployments to be available (${SECONDS}/${waitMaxSec}s): ${notReady}"
             sleep 15
-            notReady="$(oc get deployment -n "${hppNs}" --no-headers 2>/dev/null \
-                | awk '/^hpp-pool-/ { split($2,r,"/"); if (r[1]<r[2]) print $1 }')"
+            notReady="$(oc get deployment -n "${hppNs}" -o json \
+                | jq -r '.items[] | select(.metadata.name | startswith("hpp-pool-"))
+                    | select((.status.readyReplicas // 0) < (.spec.replicas // 1))
+                    | .metadata.name' || true)"
         done
         : "All HPP pool deployments are available"
         true
@@ -375,12 +381,12 @@ WaitCnvHcoAvailable() {
         until [[ "${cond}" == "True" ]]; do
             cond="$(oc -n "${ns}" get hyperconverged kubevirt-hyperconverged \
                 -o jsonpath='{range .status.conditions[?(@.type=="Available")]}{.status}{end}' \
-                2>/dev/null || true)"
+                || true)"
             [[ "${cond}" == "True" ]] && break
             (( SECONDS >= waitMaxSec )) && {
                 printf 'ERROR: HyperConverged not Available after %ds\n' "${waitMaxSec}" >&2
                 oc get hyperconverged kubevirt-hyperconverged -n "${ns}" -o yaml \
-                    > "${ARTIFACT_DIR}/hco-not-available.yaml" 2>/dev/null || true
+                    > "${ARTIFACT_DIR}/hco-not-available.yaml" 2>&1 || true
                 exit 1
             }
             : "HyperConverged Available=${cond:-<empty>}; waiting (${SECONDS}/${waitMaxSec}s)"
@@ -443,7 +449,7 @@ PrepareCnvOlmForUpgradeTest() {
             SECONDS=0
             until [[ -n "${subIp}" ]]; do
                 subIp="$(oc get "${subApi}" -n "${ns}" \
-                    -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
+                    -o jsonpath='{.status.installplan.name}' || true)"
                 [[ -n "${subIp}" ]] && break
                 (( SECONDS >= planPollMax )) && break
                 sleep "${planPollInt}"
@@ -455,7 +461,7 @@ PrepareCnvOlmForUpgradeTest() {
             fi
 
             ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
-                -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
+                -o jsonpath='{.spec.clusterServiceVersionNames[0]}' || true)"
 
             if [[ "${ipCsv}" == "${targetCsv}" ]]; then
                 : "Hop ${hop}: install plan ${subIp} already targets ${targetCsv}"
@@ -463,7 +469,7 @@ PrepareCnvOlmForUpgradeTest() {
             fi
 
             ipPhase="$(oc get "installplan/${subIp}" -n "${ns}" \
-                -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+                -o jsonpath='{.status.phase}' || true)"
             : "Hop ${hop}: approving intermediate plan ${subIp} (${ipCsv}) phase=${ipPhase}"
 
             if [[ "${ipPhase}" == "RequiresApproval" ]]; then
@@ -475,7 +481,7 @@ PrepareCnvOlmForUpgradeTest() {
             SECONDS=0
             until [[ "${installedCsv}" == "${ipCsv}" ]]; do
                 installedCsv="$(oc get "${subApi}" -n "${ns}" \
-                    -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+                    -o jsonpath='{.status.installedCSV}' || true)"
                 [[ "${installedCsv}" == "${ipCsv}" ]] && break
                 (( SECONDS >= csvInstallMax )) && {
                     oc get subscription.operators.coreos.com,installplan,csv -n "${ns}" -o yaml \
@@ -497,11 +503,11 @@ PrepareCnvOlmForUpgradeTest() {
         ipCsv=''
         until [[ "${ipCsv}" == "${targetCsv}" ]]; do
             subIp="$(oc get "${subApi}" -n "${ns}" \
-                -o jsonpath='{.status.installplan.name}' 2>/dev/null || true)"
+                -o jsonpath='{.status.installplan.name}' || true)"
             ipCsv=''
             if [[ -n "${subIp}" ]]; then
                 ipCsv="$(oc get "installplan/${subIp}" -n "${ns}" \
-                    -o jsonpath='{.spec.clusterServiceVersionNames[0]}' 2>/dev/null || true)"
+                    -o jsonpath='{.spec.clusterServiceVersionNames[0]}' || true)"
             fi
             [[ "${ipCsv}" == "${targetCsv}" ]] && break
             (( SECONDS >= targetWaitMax )) && {
@@ -558,11 +564,11 @@ export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
 trap '
     (($?)) || exit 0
     oc get storagecluster,cephcluster -n openshift-storage -o yaml \
-        > "${ARTIFACT_DIR}/odf-state-on-failure.yaml" 2>/dev/null || true
+        > "${ARTIFACT_DIR}/odf-state-on-failure.yaml" 2>&1 || true
     oc get pvc -A -o wide \
-        > "${ARTIFACT_DIR}/pvcs-on-failure.txt" 2>/dev/null || true
+        > "${ARTIFACT_DIR}/pvcs-on-failure.txt" 2>&1 || true
     oc get subscription.operators.coreos.com,installplan,csv -n openshift-cnv -o yaml \
-        > "${ARTIFACT_DIR}/cnv-olm-state-on-failure.yaml" 2>/dev/null || true
+        > "${ARTIFACT_DIR}/cnv-olm-state-on-failure.yaml" 2>&1 || true
 ' EXIT
 
 if [[ -n "${CNV_TARGET_MAJOR_MINOR}" ]]; then

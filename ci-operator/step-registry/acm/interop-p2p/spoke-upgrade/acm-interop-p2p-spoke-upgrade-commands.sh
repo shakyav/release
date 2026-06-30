@@ -10,8 +10,10 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 eval "$(
-    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq
+    typeset -a _fURL=()
+    type -t wget 1>/dev/null && _fURL=(wget -nv -O-) || _fURL=(curl -fsSL)
+    "${_fURL[@]}" https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
+)"; EnsureReqs jq yq
 
 [ -f "${SHARED_DIR}/kubeconfig" ]
 [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
@@ -32,10 +34,10 @@ spokeName="$(tr -d '[:space:]' < "${SHARED_DIR}/managed-cluster-name")"
 [[ -n "${spokeName}" ]]
 
 PatchAdminAcksForUpgrade() {
-    typeset kubeconfig="$1"
-    typeset upgradeableMsg ackKey=''
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset upgradeableMsg='' ackKey=''
     upgradeableMsg="$(oc --kubeconfig="${kubeconfig}" get clusterversion version \
-        -o jsonpath='{.status.conditions[?(@.type=="Upgradeable")].message}')"
+        -o jsonpath='{.status.conditions[?(@.type=="Upgradeable")].message}' || true)"
     if [[ -n "${upgradeableMsg}" ]]; then
         ackKey="$(grep -oE 'ack-[a-zA-Z0-9.-]+' <<<"${upgradeableMsg}" | head -1 || true)"
     fi
@@ -52,8 +54,8 @@ PatchAdminAcksForUpgrade() {
 }
 
 ApplySpokeClusterVersionRbac() {
-    typeset kubeconfig="$1"
-    typeset manifestFile="$2"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
+    typeset manifestFile="${1:?}"; (($#)) && shift
     cat > "${manifestFile}" <<'EOF'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -78,14 +80,14 @@ subjects:
   namespace: open-cluster-management-agent
 EOF
     : "Applying klusterlet-work ClusterVersion RBAC on spoke"
-    oc --kubeconfig="${kubeconfig}" apply -f "${manifestFile}"
+    oc --kubeconfig="${kubeconfig}" apply --save-config -f "${manifestFile}"
     true
 }
 
 ApplySpokeUpgradeManifestWork() {
-    typeset mwNamespace="$1"
-    typeset mwName="$2"
-    typeset manifestFile="$3"
+    typeset mwNamespace="${1:?}"; (($#)) && shift
+    typeset mwName="${1:?}"; (($#)) && shift
+    typeset manifestFile="${1:?}"; (($#)) && shift
     cat > "${manifestFile}" <<EOF
 apiVersion: work.open-cluster-management.io/v1
 kind: ManifestWork
@@ -115,12 +117,12 @@ spec:
           image: ${spokeImage}
 EOF
     : "Applying ManifestWork ${mwName} in namespace ${mwNamespace} on hub"
-    KUBECONFIG="${hubKubeconfig}" oc apply -f "${manifestFile}"
+    KUBECONFIG="${hubKubeconfig}" oc apply --save-config -f "${manifestFile}"
     true
 }
 
 WaitSpokeUpgradeCompleted() {
-    typeset kubeconfig="$1"
+    typeset kubeconfig="${1:?}"; (($#)) && shift
     : "Waiting for spoke ClusterVersion ${targetVersion} to reach Completed (${ACM_SPOKE_UPGRADE_TIMEOUT})"
     oc --kubeconfig="${kubeconfig}" wait clusterversion/version \
         --for=jsonpath='{.status.history[0].version}'="${targetVersion}" \
@@ -136,10 +138,10 @@ typeset -r mwManifest="${ARTIFACT_DIR}/spoke-${spokeName}-ocp-upgrade-manifestwo
 
 : "Upgrading spoke cluster ${spokeName}"
 
-if [[ -n "${TARGET_CHANNEL}" ]]; then
-    : "Patching spoke ClusterVersion channel to ${TARGET_CHANNEL}"
+if [[ -n "${SPOKE_CLUSTER_UPGRADE_TARGET_CHANNEL}" ]]; then
+    : "Patching spoke ClusterVersion channel to ${SPOKE_CLUSTER_UPGRADE_TARGET_CHANNEL}"
     oc --kubeconfig="${spokeKubeconfig}" patch clusterversion version --type merge \
-        -p "$(jq -cn --arg ch "${TARGET_CHANNEL}" '{"spec":{"channel":$ch}}')"
+        -p "$(jq -cn --arg ch "${SPOKE_CLUSTER_UPGRADE_TARGET_CHANNEL}" '{"spec":{"channel":$ch}}')"
 fi
 
 PatchAdminAcksForUpgrade "${spokeKubeconfig}"

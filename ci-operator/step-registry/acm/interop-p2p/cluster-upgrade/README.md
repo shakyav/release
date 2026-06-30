@@ -7,7 +7,7 @@ by a separate step. Cluster health checks run in the subsequent step.
 ## What it does
 
 1. Resolves the target version string and image digest from `OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE`.
-2. Patches `clusterversion/version` `spec.channel` to `TARGET_CHANNEL` (skipped if empty).
+2. Patches `clusterversion/version` `spec.channel` to `ACM_CLUSTER_UPGRADE_TARGET_CHANNEL` (skipped if empty).
 3. Patches `admin-acks-upgrades` when the Upgradeable condition references a required ack key (skipped if none).
 4. Runs `oc adm upgrade --to-image=<repo>@<digest>` with explicit-upgrade flags.
 5. Waits for `clusterversion/version` `status.history[0].version` to match the target version.
@@ -24,7 +24,7 @@ by a separate step. Cluster health checks run in the subsequent step.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TARGET_CHANNEL` | `""` | OCP update channel (e.g. `candidate-4.21`). Empty = skip channel patch. |
+| `ACM_CLUSTER_UPGRADE_TARGET_CHANNEL` | `""` | OCP update channel for the **hub** cluster (e.g. `candidate-4.21`). Empty = skip channel patch. |
 | `ACM_UPGRADE_TIMEOUT` | `2h` | Timeout for each `oc wait` call. Accepts any `oc wait` duration (`30m`, `2h`, `7200s`). |
 
 ## Failure diagnostics
