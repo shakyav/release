@@ -8,14 +8,15 @@ debug_on_exit() {
   local -i exit_code="${1:?MUST give the actual script Exit Status.}"; (($#)) && shift
   local -i start_time="${1:?MUST give the script start time.}"; (($#)) && shift
   local -i execution_time=$((SECONDS - start_time))
+  local -i debug_threshold=720 # 12 minutes in seconds
   local hco_namespace=openshift-cnv
   local lockfile=/tmp/debug_marker
   set +e
 
-  if (( exit_code != 0 )); then
+  if [[ (${execution_time} -lt ${debug_threshold}) || ${exit_code} -ne 0 ]]; then
     echo
     echo "--------------------------------------------------------------------------------"
-    echo " SCRIPT EXITED WITH FAILURE (runtime: ${execution_time}s) "
+    echo " SCRIPT EXITED PREMATURELY (runtime: ${execution_time}s) "
     echo "--------------------------------------------------------------------------------"
     echo "Entering debug sleep. You can now inspect the system state."
     echo "Remove the file: ${lockfile}, to continue script execution."
@@ -72,55 +73,6 @@ curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/ref
     ' EXIT
 else
     trap 'debug_on_exit "$?" "${start_time}"' EXIT
-fi
-
-typeset binFolder=''
-typeset ocUrl=''
-typeset hcoSubscription=''
-typeset -i rc=0
-typeset -x junitResultsFile="${ARTIFACT_DIR}/junit_results.xml"
-typeset -x htmlResultsFile="${ARTIFACT_DIR}/report.html"
-typeset -x hcoKind='hyperconvergeds.v1beta1.hco.kubevirt.io'
-
-    if (( exitCode != 0 )); then
-        : "SCRIPT EXITED PREMATURELY (runtime: ${executionTime}s, PID: $$, exitCode: ${exitCode})"
-        oc get -n "${hcoNamespace}" hco kubevirt-hyperconverged -o yaml > "${ARTIFACT_DIR}"/hco-kubevirt-hyperconverged-cr.yaml
-        oc logs --since=1h -n "${hcoNamespace}" -l name=hyperconverged-cluster-operator > "${ARTIFACT_DIR}"/hco.log
-        RunMustGather
-        # Loop until the marker file is removed (or Ctrl+C). Each iteration sleeps 120s.
-        # To unblock from outside the pod: rm /tmp/debug_marker
-        # To unblock interactively: Ctrl+C (interrupts the current sleep and exits the trap).
-        : "Entering debug hold — remove /tmp/debug_marker to continue, or press Ctrl+C"
-        touch /tmp/debug_marker
-        while [[ -f /tmp/debug_marker ]]; do
-            sleep 120
-        done
-    fi
-
-    # exit with the original exit code.
-    exit "${exitCode}"
-}
-
-# This trap will be executed when the script exits for any reason (successful, error, or signal).
-if [ "${MAP_TESTS}" = "true" ]; then
-    # Map results by setting identifier prefix in tests suites names for reporting tools
-    # Merge original results into a single file and compress
-    # Send modified file to shared dir for Data Router Reporter step (run here so EXIT stays DebugOnExit).
-    eval "$(
-                typeset -a _fURL=()
-                type -t wget 1>/dev/null && _fURL=(wget -qO-) || _fURL=(curl -fsSL)
-                "${_fURL[@]}" \
-curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/ci-operator/interop/common/ExitTrap--PostProcessPrep.sh
-    )"
-    # shellcheck disable=SC2154
-    trap '
-        typeset -i ec=$?
-        LP_IO__ET_PPP__NEW_TS_NAME="${DR__RP__CR_COMP_NAME}--%s" \
-            ExitTrap--PostProcessPrep junit--cnv__interop-tests__openshift-virtualization-tests.xml || true
-        DebugOnExit "${ec}" "${startTime}"
-    ' EXIT
-else
-    trap 'DebugOnExit "$?" "${startTime}"' EXIT
 fi
 
 typeset binFolder=''
@@ -203,40 +155,6 @@ function cnv::toggle_common_boot_image_import () {
     --timeout='5m'
 }
 
-# Interop pytest runs with --latest-rhel; CentOS/Fedora containerdisk crons may stay NotUpToDate
-# (NoDigest) on restricted clusters and must not block the job.
-Cnv__WaitRhelBootImportCronsUpToDate() {
-    typeset dvNamespace="${1:?}"; (($#)) && shift
-    typeset -r waitTimeout="${1:-20m}"
-    typeset -i appearTimeoutSec=600
-    typeset -i deadline=$((SECONDS + appearTimeoutSec))
-    typeset -a rhelCrons=()
-    typeset cronName
-
-    while (( SECONDS < deadline )); do
-        rhelCrons=()
-        while read -r cronName; do
-            [[ -n "${cronName}" ]] && rhelCrons+=("${cronName}")
-        done < <(
-            oc get dataimportcron -n "${dvNamespace}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
-                | grep -E '^rhel[0-9]+-image-cron$' || true
-        )
-        ((${#rhelCrons[@]})) && break
-        sleep 10
-    done
-
-    ((${#rhelCrons[@]})) || {
-        : "No RHEL DataImportCrons in ${dvNamespace} after ${appearTimeoutSec}s"
-        exit 1
-    }
-
-    for cronName in "${rhelCrons[@]}"; do
-        oc wait DataImportCron -n "${dvNamespace}" "${cronName}" \
-            --for=condition=UpToDate --timeout="${waitTimeout}"
-    done
-    true
-}
-
 #
 # Re-import datavolumes, for example after changing the default storage class
 #
@@ -246,7 +164,7 @@ function cnv::reimport_datavolumes() {
   cnv::toggle_common_boot_image_import "false"
   sleep 1
 
-  oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete' --timeout=10m
+  oc wait dataimportcrons -n "${dvnamespace}" --all --for='delete'
   echo "[DEBUG] Delete all DataSources, DataVolumes, VolumeSnapshots and PVCs of CNV default volumes"
   # `oc delete`` command does not account for dependencies or the sequence in which OpenShift resources are managed.
   # So we need to run the following commands in order to avoid issues like:
@@ -291,11 +209,13 @@ function cnv::reimport_datavolumes() {
   # Finally, delete PVCs
   oc delete pvc -n "${dvnamespace}" --selector='cdi.kubevirt.io/dataImportCron'
 
-    Cnv__ToggleCommonBootImageImport "true"
-    sleep 10
-    Cnv__WaitRhelBootImportCronsUpToDate "${dvNamespace}" 20m
-    oc get pvc -n "${dvNamespace}"
-    true
+  echo "[DEBUG] Enable DataImportCron"
+  cnv::toggle_common_boot_image_import "true"
+  sleep 10
+  echo "[DEBUG] Wait for DataImportCron to re-import volumes"
+  oc wait DataImportCron -n "${dvnamespace}" --all --for=condition=UpToDate --timeout=20m
+  echo "[DEBUG] Printing persistent volume claims"
+  oc get pvc -n "${dvnamespace}"
 }
 
 binFolder="$(mktemp -d /tmp/bin.XXXX)"

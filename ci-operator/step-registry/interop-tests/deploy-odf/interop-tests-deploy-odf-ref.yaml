@@ -1,9 +1,11 @@
 ref:
   as: interop-tests-deploy-odf
-  from: cli
+  from_image:
+    namespace: ocp
+    name: cli-jq
+    tag: latest
   commands: interop-tests-deploy-odf-commands.sh
-  timeout: 5h0m0s
-  grace_period: 10m0s
+  timeout: 3h0m0s
   resources:
     requests:
       cpu: 100m
@@ -13,18 +15,14 @@ ref:
       name: odf-quay-credentials
       mount_path: /tmp/secrets/odf-quay-credentials
   documentation: |-
-    Deploy ODF/OCS on the hub cluster or on an ACM-managed spoke when ODF_DEPLOY_ON_SPOKE=true
-    (uses managed-cluster-kubeconfig from SHARED_DIR). Merges ODF Quay credentials into cluster
-    pull-secret, installs the odf-operator from a dev catalog, creates a StorageCluster, waits for
-    Available, optionally sets cluster/kubevirt default StorageClass (virt SC for CNV interop), and
-    runs ocs-must-gather on failure via EXIT trap (grace_period allows trap to finish).
+    Deploy ODF
   env:
   - name: ODF_VERSION_MAJOR_MINOR
     documentation: The ODF major.minor version
     default: "4.13"
   - name: ODF_OPERATOR_CHANNEL
     documentation: The odf operator channel
-    default: "stable-4.13"
+    default: "stable-4.11"
   - name: ODF_SUBSCRIPTION_NAME
     documentation: The ODF/OCS subscription name
     default: "odf-operator"
@@ -34,48 +32,3 @@ ref:
   - name: ODF_VOLUME_SIZE
     documentation: The size of the ODF volume in Gi
     default: "50"
-  - name: ODF_BACKEND_STORAGE_CLASS
-    documentation: StorageClass used for ODF device-set PVCs (backend storage).
-    default: "gp2-csi"
-  - name: ODF_DEPLOY_ON_SPOKE
-    documentation: Set to "true" to deploy ODF on the ACM-managed spoke cluster (requires managed-cluster-kubeconfig in SHARED_DIR). Default targets the hub cluster.
-    default: "false"
-  - name: ODF_STORAGE_CLUSTER_WAIT_TIMEOUT
-    documentation: How long to wait for the StorageCluster Available condition. Bare metal worker nodes (e.g. c5n.metal) typically need more than the old hardcoded 180m. Accepts any oc wait duration (e.g. 180m, 240m, 4h).
-    default: "240m"
-  - name: ODF_DEFAULT_STORAGE_CLASS
-    documentation: |-
-      Cluster default StorageClass after ODF is Available. Empty = ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd.
-      For CNV interop set to ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization. ODF 4.21+ creates
-      that SC only after the virtualmachines.kubevirt.io CRD exists; when absent here, ceph-rbd is
-      set as interim default and p2p-acm-cnv-install-policy completes virt SC setup after CNV operator.
-    default: ""
-  - name: ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT
-    documentation: |-
-      When ODF_DEFAULT_STORAGE_CLASS is the virt SC and KubeVirt CRD is present, wait for that
-      StorageClass after StorageCluster Available before setting default annotations.
-    default: "30m"
-  - name: ODF_CATALOG_WAIT_TIMEOUT
-    documentation: How long to wait for the ODF CatalogSource connectionState READY.
-    default: "10m"
-  - name: ODF_CSV_WAIT_TIMEOUT
-    documentation: How long to wait for the ODF CSV phase Succeeded after installedCSV is known.
-    default: "15m"
-  - name: ODF_CRD_CREATE_WAIT_TIMEOUT
-    documentation: How long to wait for storageclusters.ocs.openshift.io CRD to be created.
-    default: "10m"
-  - name: ODF_CRD_ESTABLISHED_WAIT_TIMEOUT
-    documentation: How long to wait for storageclusters.ocs.openshift.io CRD Established condition.
-    default: "5m"
-  - name: ODF_MCP_UPDATE_WAIT_TIMEOUT
-    documentation: How long to wait for MachineConfigPools Updated after ICSP apply.
-    default: "30m"
-  - name: ODF_RBD_CSI_WAIT_TIMEOUT
-    documentation: How long to wait for RBD CSI nodeplugin DaemonSet create and rollout.
-    default: "30m"
-  - name: ODF_OLM_INSTALLEDCSV_POLL_INTERVAL
-    documentation: Seconds between polls while waiting for subscription status.installedCSV.
-    default: "10"
-  - name: ODF_OLM_INSTALLEDCSV_POLL_TIMEOUT
-    documentation: Maximum seconds to poll for subscription status.installedCSV before failing.
-    default: "300"

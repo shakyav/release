@@ -335,7 +335,7 @@ oc get machineconfig || true
 wait_mcp_continous_success
 
 : "Step #2: check all cluster operators get stable and ready"
-wait_clusteroperators_continous_success,
+wait_clusteroperators_continous_success
 
 : "Step #3: Make sure every machine is in 'Ready' status"
 check_node

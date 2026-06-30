@@ -1,205 +1,202 @@
 #!/bin/bash
-#
-# Deploy ODF/OCS on the target cluster (hub or managed spoke when ODF_DEPLOY_ON_SPOKE=true).
-#
-set -euxo pipefail; shopt -s inherit_errexit
 
-eval "$(
-    curl -fsSL https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq
+set -o nounset
+set -o errexit
+set -o pipefail
 
-trap '
-    (($?)) &&
-    timeout 8m oc adm must-gather \
-        --image="quay.io/rhceph-dev/ocs-must-gather:latest-${ODF_VERSION_MAJOR_MINOR}" \
-        --dest-dir="${ARTIFACT_DIR}/ocs_must_gather" || true
-' EXIT
+ODF_INSTALL_NAMESPACE=openshift-storage
+DEFAULT_ODF_OPERATOR_CHANNEL="stable-${ODF_VERSION_MAJOR_MINOR}"
+ODF_OPERATOR_CHANNEL="${ODF_OPERATOR_CHANNEL:-${DEFAULT_ODF_OPERATOR_CHANNEL}}"
+ODF_SUBSCRIPTION_NAME="${ODF_SUBSCRIPTION_NAME:-'odf-operator'}"
+ODF_BACKEND_STORAGE_CLASS="${ODF_BACKEND_STORAGE_CLASS:-'gp2-csi'}"
+ODF_VOLUME_SIZE="${ODF_VOLUME_SIZE:-50}Gi"
+ODF_DEFAULT_STORAGE_CLASS="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
+# ODF_DEFAULT_STORAGE_CLASS=ocs-storagecluster-ceph-rbd-virtualization
+DEFAULT_STORAGE_CLASS=${DEFAULT_STORAGE_CLASS:-${ODF_DEFAULT_STORAGE_CLASS}}
 
-if [[ "${ODF_DEPLOY_ON_SPOKE}" == "true" ]]; then
-    [ -f "${SHARED_DIR}/managed-cluster-kubeconfig" ]
-    export KUBECONFIG="${SHARED_DIR}/managed-cluster-kubeconfig"
+readonly ODF_CATALOG_IMAGE="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_VERSION_MAJOR_MINOR}"
+readonly ODF_CATALOG_NAME=odf-catalogsource
+
+readonly CLUSTER_PULL_SECRETS_ORIGINAL=/tmp/ps1.json
+readonly CLUSTER_PULL_SECRETS_UPDATED=/tmp/ps.json
+readonly ODF_QUAY_CREDENTIALS_FILE=/tmp/secrets/odf-quay-credentials/rhceph-dev
+
+
+if [[ ! -f "${ODF_QUAY_CREDENTIALS_FILE}" ]]; then
+  echo "ERROR: ODF Quay credentials file not found"
+  sleep 7200
 fi
 
-typeset -r odfInstallNamespace="openshift-storage"
-typeset -r odfCatalogImage="quay.io/rhceph-dev/ocs-registry:latest-stable-${ODF_VERSION_MAJOR_MINOR}"
-typeset -r odfCatalogName="odf-catalogsource"
-typeset -r odfQuayCredentialsFile="/tmp/secrets/odf-quay-credentials/rhceph-dev"
+echo "🐶 Get pull secret from cluster"
+oc get secret/pull-secret -n openshift-config --template='{{index .data ".dockerconfigjson" | base64decode}}' > "${CLUSTER_PULL_SECRETS_ORIGINAL}"
 
-[ -f "${odfQuayCredentialsFile}" ]
+echo "🍯 Merge pull secret with ODF Quay credentials"
+jq '. * input' "${CLUSTER_PULL_SECRETS_ORIGINAL}" "${ODF_QUAY_CREDENTIALS_FILE}" > "${CLUSTER_PULL_SECRETS_UPDATED}"
 
-# Merge cluster pull secret with ODF Quay credentials; disable xtrace inside the
-# process substitution subshell — set +x there is scoped to the subshell so the
-# parent shell's tracing state is not affected; no save/restore needed.
-oc -n openshift-config set data secret/pull-secret \
-    --from-file .dockerconfigjson=<(
-        jq '. * input' <(
-            set +x
-            oc -n openshift-config get secret/pull-secret \
-                --template='{{index .data ".dockerconfigjson" | base64decode}}'
-        ) "${odfQuayCredentialsFile}"
-    )
+echo "🌊 Update pull secret in cluster"
+oc set data secret/pull-secret -n openshift-config --from-file=.dockerconfigjson="${CLUSTER_PULL_SECRETS_UPDATED}"
 
+function monitor_progress() {
+  local status=''
+  while true; do
+    echo "Checking progress..."
+    oc get "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" -n "${ODF_INSTALL_NAMESPACE}" \
+      -o jsonpath='{range .status.conditions[*]}{@}{"\n"}{end}'
+    status=$(oc get "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" -n openshift-storage -o jsonpath="{.status.phase}")
+    if [[ "$status" == "Ready" ]]; then
+      echo "StorageCluster is Ready"
+      exit 0
+    fi
+    sleep 30
+  done
+}
+
+function run_must_gather_and_abort_on_fail() {
+  local odf_must_gather_image="quay.io/rhceph-dev/ocs-must-gather:latest-${ODF_VERSION_MAJOR_MINOR}"
+  # Wait for StorageCluster to be deployed, and on fail run must gather
+  oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}"  \
+    -n $ODF_INSTALL_NAMESPACE --for=condition='Available' --timeout='30m' || \
+  oc adm must-gather --image="${odf_must_gather_image}" --dest-dir="${ARTIFACT_DIR}/ocs_must_gather"
+  # exit 1
+}
+
+# Wait until master and worker MCP are Updated
+wait_mcp_for_updated() {
+  local attempts=${1:-60}
+  local mcp_updated="false"
+  local mcp_stat_file=''
+
+  mcp_stat_file="$(mktemp "${TMPDIR:-/tmp}"/mcp-stat.XXXXX)"
+
+  sleep 30
+
+  for ((i=1; i<=attempts; i++)); do
+    echo "Attempt ${i}/${attempts}" >&2
+    sleep 30
+    if oc wait mcp --all --for condition=updated --timeout=1m; then
+      echo "MCP is Updated" >&2
+      mcp_updated="true"
+      break
+    fi
+  done
+
+  rm -f "${mcp_stat_file}"
+
+  if [[ "${mcp_updated}" == "false" ]]; then
+    echo "Error: MCP didn't get Updated!!" >&2
+    exit 1
+  fi
+}
+
+# Move into a tmp folder with write access
 pushd /tmp
 
-oc create namespace "${odfInstallNamespace}" --dry-run=client -o yaml | oc apply -f -
+echo "Installing ODF from ${ODF_OPERATOR_CHANNEL} into ${ODF_INSTALL_NAMESPACE}"
+echo "Create the install namespace ${ODF_INSTALL_NAMESPACE}"
+oc apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "${ODF_INSTALL_NAMESPACE}"
+EOF
 
-{
-    oc create -f - --dry-run=client -o json --save-config |
-    jq -c \
-        --arg ns "${odfInstallNamespace}" \
-        '
-        .metadata.name       = ($ns + "-operator-group") |
-        .metadata.namespace  = $ns |
-        .spec.targetNamespaces = [$ns]
-        '
-} 0<<'ocEOF' | oc apply -f -
+echo "Deploy new operator group"
+oc apply -f - <<EOF
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: placeholder
-  namespace: placeholder
+  name: "${ODF_INSTALL_NAMESPACE}-operator-group"
+  namespace: "${ODF_INSTALL_NAMESPACE}"
 spec:
   targetNamespaces:
-  - placeholder
-ocEOF
+  - $(echo \"${ODF_INSTALL_NAMESPACE}\" | sed "s|,|\"\n  - \"|g")
+EOF
 
-oc image extract "${odfCatalogImage}" --file /icsp.yaml
-if [[ -e "icsp.yaml" ]]; then
-    oc create -f icsp.yaml --dry-run=client -o yaml --save-config | oc apply -f -
-    # MCPs already in Updated state satisfy the first condition immediately; || true is benign.
-    oc wait mcp --all --for=condition=Updated=false --timeout=2m || true
-    oc wait mcp --all --for=condition=Updated --timeout="${ODF_MCP_UPDATE_WAIT_TIMEOUT}"
+echo "Extract ICSP from the catalog image"
+oc image extract "${ODF_CATALOG_IMAGE}" --file /icsp.yaml
+
+# Create an ICSP if applicable
+if [ -e "icsp.yaml" ] ; then
+  echo "Create an ICSP if applicable"
+  oc apply --filename="icsp.yaml"
+  sleep 30
+  wait_mcp_for_updated 60
 fi
 
-{
-    oc create -f - --dry-run=client -o json --save-config |
-    jq -c \
-        --arg name  "${odfCatalogName}" \
-        --arg image "${odfCatalogImage}" \
-        '
-        .metadata.name = $name |
-        .spec.image    = $image
-        '
-} 0<<'ocEOF' | oc apply -f -
+echo "Add ODF CatalogSource"
+echo "📷 image: ${ODF_CATALOG_IMAGE}"
+oc apply -f - <<__EOF__
 kind: CatalogSource
 apiVersion: operators.coreos.com/v1alpha1
 metadata:
-  name: placeholder
+  name: ${ODF_CATALOG_NAME}
   namespace: openshift-marketplace
 spec:
   displayName: OpenShift Container Storage
   icon:
-    base64data: PHN2ZyBpZD0iTGF5ZXJfMSIgZGF0YS1uYW1lPSJMYXllciAxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTQ1Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6I2UwMDt9PC9zdHlsZT48L2RlZnM+PHRpdGxlPlJlZEhhdC1Mb2dvLUhhdC1Db2xvcjwvdGl0bGU+PHBhdGggZD0iTTE1Ny43Nyw2Mi42MWExNCwxNCwwLDAsMSwuMzEsMy40MmMwLDE0Ljg4LTE4LjEsMTcuNDYtMzAuNjEsMTcuNDZDNzguODMsODMuNDksNDIuNTMsNTMuMjYsNDIuNTMsNDRhNi40Myw2LjQzLDAsMCwxLC4yMi0xLjk0bC0zLjY2LDkuMDZhMTguNDUsMTguNDUsMCwwLDAtMS41MSw3LjMzYzAsMTguMTEsNDEsNDUuNDgsODcuNzQsNDUuNDgsMjAuNjksMCwzNi40My03Ljc2LDM2LjQzLTIxLjc3LDAtMS4wOCwwLTEuOTQtMS43My0xMC4xM1oiLz48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik0xMjcuNDcsODMuNDljMTIuNTEsMCwzMC42MS0yLjU4LDMwLjYxLTE3LjQ2YTE0LDE0LDAsMCwwLS4zMS0zLjQybC03LjQ1LTMyLjM2Yy0xLjcyLTcuMTItMy4yMy0xMC4zNS0xNS43My0xNi42QzEyNC44OSw4LjY5LDEwMy43Ni41LDk3LjUxLjUsOTEuNjkuNSw5MCw4LDgzLjA2LDhjLTYuNjgsMCwxMS42NC01LjYtMTcuODktNS42LTYsMC05LjkxLDQuMDktMTIuOTMsMTIuNSwwLDAtOC40MSwyMy43Mi05LjQ5LDI3LjE2QTYuNDMsNi40MywwLDAsMCw0Mi41Myw0NGMwLDkuMjIsMzYuMywzOS40NSw4NC45NCwzOS40NU0xNjAsNzIuMDdjMS43Myw4LjE5LDEuNzMsOS4wNSwxLjczLDEwLjEzLDAsMTQtMTUuNzQsMjEuNzctMzYuNDMsMjEuNzdDNzguNTQsMTA0LDM3LjU4LDc2LjYsMzcuNTgsNTguNDlhMTguNDUsMTguNDUsMCwwLDEsMS41MS03LjMzQzIyLjI3LDUyLC41LDU1LC41LDc0LjIyYzAsMzEuNDgsNzQuNTksNzAuMjgsMTMzLjY1LDcwLjI4LDQ1LjI4LDAsNTYuNy0yMC40OCw1Ni43LTM2LjY1LDAtMTIuNzItMTEtMjcuMTYtMzAuODMtMzUuNzgiLz48L3N2Zz4=
+    base64data: PHN2ZyBpZD0iTGF5ZXJfMSIgZGF0YS1uYW1lPSJMYXllciAxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTQ1Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6I2UwMDt9PC9zdHlsZT48L2RlZnM+PHRpdGxlPlJlZEhhdC1Mb2dvLUhhdC1Db2xvcjwvdGl0bGU+PHBhdGggZD0iTTE1Ny43Nyw2Mi42MWExNCwxNCwwLDAsMSwuMzEsMy40MmMwLDE0Ljg4LTE4LjEsMTcuNDYtMzAuNjEsMTcuNDZDNzguODMsODMuNDksNDIuNTMsNTMuMjYsNDIuNTMsNDRhNi40Myw2LjQzLDAsMCwxLC4yMi0xLjk0bC0zLjY2LDkuMDZhMTguNDUsMTguNDUsMCwwLDAtMS41MSw3LjMzYzAsMTguMTEsNDEsNDUuNDgsODcuNzQsNDUuNDgsMjAuNjksMCwzNi40My03Ljc2LDM2LjQzLTIxLjc3LDAtMS4wOCwwLTEuOTQtMS43My0xMC4xM1oiLz48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik0xMjcuNDcsODMuNDljMTIuNTEsMCwzMC42MS0yLjU4LDMwLjYxLTE3LjQ2YTE0LDE0LDAsMCwwLS4zMS0zLjQybC03LjQ1LTMyLjM2Yy0xLjcyLTcuMTItMy4yMy0xMC4zNS0xNS43My0xNi42QzEyNC44OSw4LjY5LDEwMy43Ni41LDk3LjUxLjUsOTEuNjkuNSw5MCw4LDgzLjA2LDhjLTYuNjgsMC0xMS42NC01LjYtMTcuODktNS42LTYsMC05LjkxLDQuMDktMTIuOTMsMTIuNSwwLDAtOC40MSwyMy43Mi05LjQ5LDI3LjE2QTYuNDMsNi40MywwLDAsMCw0Mi41Myw0NGMwLDkuMjIsMzYuMywzOS40NSw4NC45NCwzOS40NU0xNjAsNzIuMDdjMS43Myw4LjE5LDEuNzMsOS4wNSwxLjczLDEwLjEzLDAsMTQtMTUuNzQsMjEuNzctMzYuNDMsMjEuNzdDNzguNTQsMTA0LDM3LjU4LDc2LjYsMzcuNTgsNTguNDlhMTguNDUsMTguNDUsMCwwLDEsMS41MS03LjMzQzIyLjI3LDUyLC41LDU1LC41LDc0LjIyYzAsMzEuNDgsNzQuNTksNzAuMjgsMTMzLjY1LDcwLjI4LDQ1LjI4LDAsNTYuNy0yMC40OCw1Ni43LTM2LjY1LDAtMTIuNzItMTEtMjcuMTYtMzAuODMtMzUuNzgiLz48L3N2Zz4=
     mediatype: image/svg+xml
-  image: placeholder
+  image: ${ODF_CATALOG_IMAGE}
   publisher: Red Hat
   sourceType: grpc
-ocEOF
+__EOF__
 
-oc wait "catalogSource/${odfCatalogName}" -n openshift-marketplace \
-    --for=jsonpath='{.status.connectionState.lastObservedState}=READY' \
-    --timeout="${ODF_CATALOG_WAIT_TIMEOUT}"
+echo "⏳ Wait for CatalogSource to be ready"
+sleep 30
+oc wait catalogSource/${ODF_CATALOG_NAME} -n openshift-marketplace \
+  --for=jsonpath='{.status.connectionState.lastObservedState}=READY' --timeout='5m'
 
-oc label "CatalogSource/${odfCatalogName}" -n openshift-marketplace ocs-operator-internal=true
+echo "🏷 Set label on ODF CatalogSource (required for ocs-ci tests)"
+oc label CatalogSource/${ODF_CATALOG_NAME} -n openshift-marketplace ocs-operator-internal=true
 
-typeset subscriptionName=''
-subscriptionName="$(
-    {
-        oc create -f - --dry-run=client -o json --save-config |
-        jq -c \
-            --arg name "${ODF_SUBSCRIPTION_NAME}" \
-            --arg ns   "${odfInstallNamespace}" \
-            --arg chan  "${ODF_OPERATOR_CHANNEL}" \
-            --arg src  "${odfCatalogName}" \
-            '
-            .metadata.name      = $name |
-            .metadata.namespace = $ns |
-            .spec.channel       = $chan |
-            .spec.name          = $name |
-            .spec.source        = $src
-            '
-    } 0<<'ocEOF' | oc apply -f - -o jsonpath='{.metadata.name}'
+echo "Subscribe to the operator"
+SUB=$(
+    cat <<EOF | oc apply -f - -o jsonpath='{.metadata.name}'
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: placeholder
-  namespace: placeholder
+  name: ${ODF_SUBSCRIPTION_NAME}
+  namespace: ${ODF_INSTALL_NAMESPACE}
 spec:
-  channel: placeholder
+  channel: ${ODF_OPERATOR_CHANNEL}
   installPlanApproval: Automatic
-  name: placeholder
-  source: placeholder
+  name: ${ODF_SUBSCRIPTION_NAME}
+  source: ${ODF_CATALOG_NAME}
   sourceNamespace: openshift-marketplace
-ocEOF
-)"
-
-(
-    # Phase 1: poll until OLM populates installedCSV — oc wait requires a known exact value so
-    # a loop is needed. Use the fully-qualified type to avoid collision with ACM subscriptions.
-    # Subshell isolates SECONDS=0 so the parent shell's elapsed-time counter is not reset.
-    typeset csvName=''
-    typeset -i wInt="${ODF_OLM_INSTALLEDCSV_POLL_INTERVAL}" \
-        wMax="${ODF_OLM_INSTALLEDCSV_POLL_TIMEOUT}"
-    SECONDS=0
-    until [[ -n "${csvName}" ]]; do
-        csvName="$(oc -n "${odfInstallNamespace}" \
-            get "subscriptions.operators.coreos.com/${subscriptionName}" \
-            -o jsonpath='{.status.installedCSV}' || true)"
-        if [[ -z "${csvName}" ]]; then
-            if (( SECONDS >= wMax )); then
-                oc -n "${odfInstallNamespace}" get "subscriptions.operators.coreos.com/${subscriptionName}" -o yaml || true
-                oc -n openshift-marketplace get catalogsource "${odfCatalogName}" -o yaml || true
-                oc -n "${odfInstallNamespace}" get csv -o wide || true
-                exit 1
-            fi
-            : "Waiting for subscription installedCSV (${SECONDS}/${wMax}s)"
-            sleep "${wInt}"
-        fi
-    done
-    : "OLM registered CSV: ${csvName}"
-
-    # Phase 2: CSV name is now known; oc wait with the exact value is safe.
-    if ! oc -n "${odfInstallNamespace}" wait "clusterserviceversion/${csvName}" \
-            --for=jsonpath='{.status.phase}'=Succeeded \
-            --timeout="${ODF_CSV_WAIT_TIMEOUT}"; then
-        oc -n "${odfInstallNamespace}" get csv -o wide || true
-        exit 1
-    fi
-    : "OLM installed CSV: ${csvName}"
-    true
+EOF
 )
 
-# Phase 3: odf-operator is a meta-operator — its CSV Succeeded only means the odf-operator
-# pod is running. Sub-operators (ocs-operator, noobaa-operator, rook-ceph-operator) are
-# installed asynchronously afterward; storageclusters.ocs.openshift.io is owned by ocs-operator
-# and does not exist until it runs. --for=create blocks until the object appears.
-oc wait crd/storageclusters.ocs.openshift.io --for=create \
-    --timeout="${ODF_CRD_CREATE_WAIT_TIMEOUT}"
-oc wait crd/storageclusters.ocs.openshift.io --for=condition='Established' \
-    --timeout="${ODF_CRD_ESTABLISHED_WAIT_TIMEOUT}"
+echo "⏳ Wait for CSV to be ready"
+for _ in {1..60}; do
+    CSV=$(oc -n "$ODF_INSTALL_NAMESPACE" get subscription "$SUB" -o jsonpath='{.status.installedCSV}' || true)
+    if [[ -n "$CSV" ]]; then
+        if [[ "$(oc -n "$ODF_INSTALL_NAMESPACE" get csv "$CSV" -o jsonpath='{.status.phase}')" == "Succeeded" ]]; then
+            echo "ClusterServiceVersion \"$CSV\" ready"
+            break
+        fi
+    fi
+    sleep 10
+done
 
+echo "⏳ Wait for OCS Operator deployment to be ready"
+sleep 90
+
+oc wait deployment ocs-operator \
+  --namespace="${ODF_INSTALL_NAMESPACE}" \
+  --for=condition='Available' \
+  --timeout='5m'
+
+echo "🏷️ Preparing Nodes"
 oc label nodes cluster.ocs.openshift.io/openshift-storage='' \
-    --selector='node-role.kubernetes.io/worker'
+  --selector='node-role.kubernetes.io/worker'
 
-{
-    oc create -f - --dry-run=client -o json --save-config |
-    jq -c \
-        --arg name         "${ODF_STORAGE_CLUSTER_NAME}" \
-        --arg ns           "${odfInstallNamespace}" \
-        --arg storage      "${ODF_VOLUME_SIZE}Gi" \
-        --arg storageClass "${ODF_BACKEND_STORAGE_CLASS}" \
-        '
-        .metadata.name                                                              = $name |
-        .metadata.namespace                                                         = $ns |
-        .spec.storageDeviceSets[0].dataPVCTemplate.spec.resources.requests.storage = $storage |
-        .spec.storageDeviceSets[0].dataPVCTemplate.spec.storageClassName            = $storageClass
-        '
-} 0<<'ocEOF' | oc apply -f -
+echo "💽 Create StorageCluster"
+cat <<EOF | oc apply -f -
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
 metadata:
-  name: placeholder
-  namespace: placeholder
+  name: ${ODF_STORAGE_CLUSTER_NAME}
+  namespace: openshift-storage
 spec:
   storageDeviceSets:
   - count: 1
@@ -209,84 +206,30 @@ spec:
         - ReadWriteOnce
         resources:
           requests:
-            storage: placeholder
-        storageClassName: placeholder
+            storage: ${ODF_VOLUME_SIZE}
+        storageClassName: ${ODF_BACKEND_STORAGE_CLASS}
         volumeMode: Block
     name: ocs-deviceset
     placement: {}
     portable: true
     replica: 3
     resources: {}
-ocEOF
+EOF
 
-# Wait for the Ceph RBD CSI node plugin DaemonSet before relying on StorageCluster Available.
-# A stuck CSI node plugin pod blocks OSD join and surfaces only as a 180m timeout otherwise.
-# DaemonSet name is deterministic: <namespace>.rbd.csi.ceph.com-nodeplugin.
-typeset rbdDs="${odfInstallNamespace}.rbd.csi.ceph.com-nodeplugin"
-oc wait "daemonset/${rbdDs}" -n "${odfInstallNamespace}" --for=create \
-    --timeout="${ODF_RBD_CSI_WAIT_TIMEOUT}"
-if ! oc rollout status "daemonset/${rbdDs}" -n "${odfInstallNamespace}" \
-        --timeout="${ODF_RBD_CSI_WAIT_TIMEOUT}"; then
-    oc -n "${odfInstallNamespace}" get pods -l app=rook-ceph-csi -o wide || true
-    oc -n "${odfInstallNamespace}" get pods \
-        -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}' \
-        | grep -i plugin || true
-    oc -n "${odfInstallNamespace}" get pods --no-headers \
-        -o custom-columns='NAME:.metadata.name,STATUS:.status.phase' \
-        | awk '$2 != "Running" && /plugin/ {print $1; exit}' \
-        | xargs -r oc -n "${odfInstallNamespace}" describe pod || true
-    exit 1
-fi
+# Wait 30 sec and start monitoring the progress of the StorageCluster
+sleep 30
+monitor_progress &
+run_must_gather_and_abort_on_fail &
 
-if ! oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
-        -n "${odfInstallNamespace}" --for=condition='Available' \
-        --timeout="${ODF_STORAGE_CLUSTER_WAIT_TIMEOUT}"; then
-    oc -n "${odfInstallNamespace}" get storagecluster "${ODF_STORAGE_CLUSTER_NAME}" \
-        -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' || true
-    oc -n "${odfInstallNamespace}" get pods --field-selector='status.phase!=Running' -o wide || true
-    oc -n "${odfInstallNamespace}" get pvc --field-selector='status.phase!=Bound' -o wide || true
-    exit 1
-fi
+echo "⏳ Wait for StorageCluster to be deployed"
+oc wait "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}"  \
+    -n $ODF_INSTALL_NAMESPACE --for=condition='Available' --timeout='180m'
 
-# Default SC: legacy jobs use ceph-rbd; CNV+ODF jobs set ODF_DEFAULT_STORAGE_CLASS to
-# ${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization for HCO boot-image imports.
-typeset requestedDefaultSc="${ODF_DEFAULT_STORAGE_CLASS}"
-[[ -n "${requestedDefaultSc}" ]] || requestedDefaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
+echo " 🚮 Remove is-default-class annotation from all the storage classes"
+oc get sc -o name | xargs -I{} oc annotate {} storageclass.kubernetes.io/is-default-class-
 
-typeset defaultSc="${requestedDefaultSc}"
-typeset virtSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd-virtualization"
+echo " ⭐ Make ${DEFAULT_STORAGE_CLASS} the default storage class"
+oc annotate storageclass ${DEFAULT_STORAGE_CLASS} storageclass.kubernetes.io/is-default-class=true
 
-# ODF 4.21+ (provider/client model): ocs-operator adds the virt SC to StorageConsumer only
-# when the virtualmachines.kubevirt.io CRD exists (CNV operator). When deploy-odf runs before
-# CNV policy, defer virt SC wait/default to p2p-acm-cnv-install-policy. When deploy-odf runs
-# after CNV (post-upgrade interop jobs), the KubeVirt CRD is present and virt SC setup happens here.
-if [[ "${requestedDefaultSc}" == "${virtSc}" ]] && ! oc get crd/virtualmachines.kubevirt.io &>/dev/null; then
-    : "KubeVirt CRD absent; deferring ${virtSc} default setup to CNV policy step"
-    defaultSc="${ODF_STORAGE_CLUSTER_NAME}-ceph-rbd"
-fi
 
-if [[ "${defaultSc}" == "${virtSc}" ]]; then
-    if ! oc wait "storageclass/${defaultSc}" --for=create \
-            --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
-        oc get sc || true
-        oc get crd/virtualmachines.kubevirt.io -o yaml \
-            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>/dev/null || true
-        oc get "storagecluster.ocs.openshift.io/${ODF_STORAGE_CLUSTER_NAME}" \
-            -n "${odfInstallNamespace}" -o yaml \
-            > "${ARTIFACT_DIR}/storagecluster.yaml" || true
-        exit 1
-    fi
-fi
-
-oc get sc -o name | xargs -rI{} oc annotate {} \
-    storageclass.kubernetes.io/is-default-class- \
-    storageclass.kubevirt.io/is-default-virt-class- --overwrite
-oc annotate storageclass "${defaultSc}" \
-    storageclass.kubernetes.io/is-default-class=true --overwrite
-if [[ "${defaultSc}" == "${virtSc}" ]]; then
-    oc annotate storageclass "${defaultSc}" \
-        storageclass.kubevirt.io/is-default-virt-class=true --overwrite
-fi
-
-popd
-true
+echo "ODF/OCS Operator is deployed successfully"
