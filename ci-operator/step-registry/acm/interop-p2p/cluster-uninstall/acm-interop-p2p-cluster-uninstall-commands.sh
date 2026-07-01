@@ -96,10 +96,10 @@ UninstallCluster() {
         return 0
     fi
 
-    # Detach from ACM (ManagedCluster)
-    : "Detaching from ACM (ManagedCluster) for '${clusterName}'"
+    # Step 1: Detach from ACM (ManagedCluster) first.
+    # Deleting ManagedCluster signals ACM to detach the spoke.
     if oc get managedcluster "${clusterName}" 1>/dev/null; then
-        : "Deleting ManagedCluster '${clusterName}' from ACM (primary deletion step)"
+        : "Deleting ManagedCluster '${clusterName}' from ACM"
         if [[ "${ACM_CLUSTER_UNINSTALL_FORCE_DELETE_MC}" == "true" ]]; then
             : "Force-stripping finalizers from ManagedCluster '${clusterName}'"
             oc patch managedcluster "${clusterName}" \
@@ -115,7 +115,7 @@ UninstallCluster() {
         oc -n "${namespace}" delete klusterletaddonconfig "${clusterName}" --ignore-not-found=true
     fi
 
-    # Ensure ClusterDeployment triggers infrastructure deprovisioning
+    # Step 2: Trigger infrastructure deprovisioning via ClusterDeployment.
     : "Ensuring ClusterDeployment triggers infrastructure deprovisioning for '${clusterName}'"
     typeset deprovName=""
     # needDeprovWait is true when Hive is (or will be) running a ClusterDeprovision:
@@ -143,6 +143,7 @@ UninstallCluster() {
         fi
     fi
 
+    # Step 3: Wait for Hive to finish deprovisioning the infrastructure.
     if [[ "${needDeprovWait}" == "true" ]]; then
         : "Watching deprovision progress for '${clusterName}'"
 
@@ -179,6 +180,7 @@ UninstallCluster() {
         : "Cluster '${clusterName}' deprovisioning completed"
     fi
 
+    # Step 4: Clean up namespace-scoped and cluster-scoped ACM set resources.
     # Remove binding before ManagedClusterSet (install creates ManagedClusterSetBinding in namespace)
     typeset mcSetName="${clusterName}-set"
     if oc -n "${namespace}" get managedclustersetbinding "${mcSetName}" 1>/dev/null; then
@@ -201,16 +203,26 @@ command -v oc 1>/dev/null || { : "oc not found"; exit 1; }
 #=====================
 # Uninstall all clusters
 #=====================
-: "Uninstalling ${#clustersToUninstallArr[@]} spoke cluster(s): ${clustersToUninstallArr[*]}"
+: "Uninstalling ${#clustersToUninstallArr[@]} spoke cluster(s) in parallel: ${clustersToUninstallArr[*]}"
 
-typeset -i failedCount=0
+typeset -a pids=()
+typeset -a pidNames=()
 for clusterName in "${clustersToUninstallArr[@]}"; do
     clusterName="$(printf '%s' "${clusterName}" | tr -d '\n\r')"
     [[ -z "${clusterName}" ]] && continue
-    if ! UninstallCluster "${clusterName}"; then
-        : "Failed to uninstall cluster '${clusterName}'"
+    UninstallCluster "${clusterName}" &
+    pids+=($!)
+    pidNames+=("${clusterName}")
+done
+
+typeset -i failedCount=0
+typeset -i idx=0
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        : "Failed to uninstall cluster '${pidNames[${idx}]}'"
         (( failedCount++ )) || true
     fi
+    (( idx++ )) || true
 done
 
 if [[ "${failedCount}" -gt 0 ]]; then

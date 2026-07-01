@@ -4,10 +4,11 @@ Deprovisions a **Hive-managed ACM spoke** from the hub after test/post phase.
 
 ## Order of operations
 
-1. Patch and delete `ClusterDeployment` (`preserveOnDelete=false`) to trigger Hive deprovision
-2. Wait for `ClusterDeprovision` (auto-created by Hive, or manual fallback from metadata)
-3. Wait for `ClusterDeprovision.status.completed=true`
-4. Delete `KlusterletAddonConfig` and `ManagedCluster` (ACM detach **after** infra teardown)
+1. Delete `ManagedCluster` (ACM detach first) and `KlusterletAddonConfig`
+2. Patch and delete `ClusterDeployment` (`preserveOnDelete=false`) to trigger Hive deprovision
+3. Wait for `ClusterDeprovision` (auto-created by Hive, or manual fallback from metadata)
+4. Wait for `ClusterDeprovision.status.completed=true`
+5. Delete `ManagedClusterSetBinding` and `ManagedClusterSet`
 
 Spoke cluster health does not block hub-side deprovision; hub namespace must retain metadata secrets and AWS credentials.
 

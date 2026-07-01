@@ -140,35 +140,10 @@ ResolveSpokeCidrs() {
     true
 }
 
-#=====================
-# InstallYq — install yq to /tmp/bin if not already in PATH
-#=====================
-# The cli image ships oc but not yq; this function downloads a pinned
-# release on demand and prepends /tmp/bin to PATH.
-InstallYq() {
-    if command -v yq 1>/dev/null; then
-        : "yq already in PATH: $(yq --version 2>&1)"
-        return
-    fi
-    typeset -r yqVersion="v4.44.2"
-    typeset yqArch
-    yqArch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-    : "Installing yq ${yqVersion} (${yqArch}) to /tmp/bin"
-    mkdir -p /tmp/bin
-    curl -fsSL \
-        "https://github.com/mikefarah/yq/releases/download/${yqVersion}/yq_linux_${yqArch}" \
-        -o /tmp/bin/yq
-    chmod +x /tmp/bin/yq
-    export PATH="/tmp/bin:${PATH}"
-    : "yq installed: $(yq --version 2>&1)"
-    true
-}
-
 # Verify required CLI tools are available
 Need oc
 Need curl
 Need base64
-InstallYq
 
 #=====================
 # Get hub cluster name for suffix generation

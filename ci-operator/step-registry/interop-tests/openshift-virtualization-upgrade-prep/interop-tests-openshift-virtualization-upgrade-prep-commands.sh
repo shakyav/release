@@ -405,7 +405,9 @@ InstallAndVerifyVirtctl() {
     fi
 
     typeset dlURL="https://hyperconverged-cluster-cli-download-openshift-cnv.${baseURL}/amd64/linux/virtctl.tar.gz"
-    if ! curl -kfsSL "${dlURL}" | tar -xzf - -C "${binFolder}"; then
+    typeset -a _virtFURL=()
+    type -t wget 1>/dev/null && _virtFURL=(wget -q --no-check-certificate -O-) || _virtFURL=(curl -kfsSL)
+    if ! "${_virtFURL[@]}" "${dlURL}" | tar -xzf - -C "${binFolder}"; then
         exit 1
     fi
 

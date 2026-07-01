@@ -287,7 +287,7 @@ GetInstalledCnvCsv() {
     typeset csv
     if oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv 1>/dev/null; then
         csv="$(oc get subscription.operators.coreos.com hco-operatorhub -n openshift-cnv \
-            -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
+            -o jsonpath='{.status.installedCSV}' || true)"
         if [[ -n "${csv}" ]]; then
             printf '%s' "${csv}"
             return 0
@@ -329,9 +329,9 @@ ConfigureOdfVirtStorageClassDefaults() {
             --timeout="${ODF_VIRT_STORAGE_CLASS_WAIT_TIMEOUT}"; then
         oc --kubeconfig="${kubeconfig}" get sc || true
         oc --kubeconfig="${kubeconfig}" get crd/virtualmachines.kubevirt.io -o yaml \
-            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>/dev/null || true
+            > "${ARTIFACT_DIR}/kubevirt-crd.yaml" 2>&1 || true
         oc --kubeconfig="${kubeconfig}" get storageconsumer -n openshift-storage -o yaml \
-            > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>/dev/null || true
+            > "${ARTIFACT_DIR}/storageconsumer.yaml" 2>&1 || true
         exit 1
     fi
 

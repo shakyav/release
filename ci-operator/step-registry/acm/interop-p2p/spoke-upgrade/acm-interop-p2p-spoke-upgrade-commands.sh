@@ -80,7 +80,7 @@ subjects:
   namespace: open-cluster-management-agent
 EOF
     : "Applying klusterlet-work ClusterVersion RBAC on spoke"
-    oc --kubeconfig="${kubeconfig}" apply --save-config -f "${manifestFile}"
+    oc --kubeconfig="${kubeconfig}" apply -f "${manifestFile}"
     true
 }
 
@@ -117,7 +117,7 @@ spec:
           image: ${spokeImage}
 EOF
     : "Applying ManifestWork ${mwName} in namespace ${mwNamespace} on hub"
-    KUBECONFIG="${hubKubeconfig}" oc apply --save-config -f "${manifestFile}"
+    KUBECONFIG="${hubKubeconfig}" oc apply -f "${manifestFile}"
     true
 }
 
