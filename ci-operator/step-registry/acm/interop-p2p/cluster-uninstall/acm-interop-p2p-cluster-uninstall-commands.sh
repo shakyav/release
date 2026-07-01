@@ -14,7 +14,7 @@ eval "$(
     typeset -a _fURL=()
     type -t wget 1>/dev/null && _fURL=(wget -nv -O-) || _fURL=(curl -fsSL)
     "${_fURL[@]}" https://raw.githubusercontent.com/RedHatQE/OpenShift-LP-QE--Tools/refs/heads/main/libs/bash/common/EnsureReqs.sh
-)"; EnsureReqs jq yq
+)"; EnsureReqs jq
 
 trap '(($?)) || exit 0
     oc get managedcluster -o wide \
@@ -83,6 +83,7 @@ UninstallCluster() {
     typeset clusterName="$1"
     typeset namespace="${clusterName}"
     typeset -i timeoutSecs=$(( ACM_CLUSTER_DEPROVISION_TIMEOUT_MINUTES * 60 ))
+    typeset -i mcDetachTimeoutSecs=$(( ACM_CLUSTER_MC_DETACH_TIMEOUT_MINUTES * 60 ))
     typeset -i pollSecs="${ACM_CLUSTER_DEPROVISION_POLL_SECONDS}"
 
     : "Uninstalling cluster '${clusterName}' in namespace '${namespace}'"
@@ -97,15 +98,24 @@ UninstallCluster() {
     fi
 
     # Step 1: Detach from ACM (ManagedCluster) first.
-    # Deleting ManagedCluster signals ACM to detach the spoke.
+    # Deleting ManagedCluster signals ACM to detach the spoke. If the spoke is
+    # unreachable, ACM cannot clear its finalizers; we auto-strip them after
+    # ACM_CLUSTER_MC_DETACH_TIMEOUT_MINUTES to ensure deprovisioning always proceeds.
     if oc get managedcluster "${clusterName}" 1>/dev/null; then
         : "Deleting ManagedCluster '${clusterName}' from ACM"
         if [[ "${ACM_CLUSTER_UNINSTALL_FORCE_DELETE_MC}" == "true" ]]; then
-            : "Force-stripping finalizers from ManagedCluster '${clusterName}'"
+            : "Force-stripping finalizers from ManagedCluster '${clusterName}' immediately"
             oc patch managedcluster "${clusterName}" \
                 --type=merge -p '{"metadata":{"finalizers":null}}'
         fi
-        oc delete managedcluster "${clusterName}" --ignore-not-found=true
+        oc delete managedcluster "${clusterName}" --ignore-not-found=true --wait=false
+        if ! oc wait "managedcluster/${clusterName}" --for=delete \
+                --timeout="${mcDetachTimeoutSecs}s" 1>/dev/null; then
+            : "ManagedCluster '${clusterName}' stuck after ${mcDetachTimeoutSecs}s; auto-stripping finalizers"
+            oc patch managedcluster "${clusterName}" \
+                --type=merge -p '{"metadata":{"finalizers":null}}' || true
+            oc delete managedcluster "${clusterName}" --ignore-not-found=true || true
+        fi
     else
         : "ManagedCluster '${clusterName}' not present (already removed)"
     fi
@@ -118,12 +128,12 @@ UninstallCluster() {
     # Step 2: Trigger infrastructure deprovisioning via ClusterDeployment.
     : "Ensuring ClusterDeployment triggers infrastructure deprovisioning for '${clusterName}'"
     typeset deprovName=""
-    # needDeprovWait is true when Hive is (or will be) running a ClusterDeprovision:
+    # isDeprovWaitNeeded is true when Hive is (or will be) running a ClusterDeprovision:
     #   - We just deleted the ClusterDeployment → Hive will create a ClusterDeprovision shortly
     #   - ClusterDeployment was already gone but a ClusterDeprovision object exists → wait for it
     # It is false only when ClusterDeployment is already gone AND no ClusterDeprovision exists,
     # which means infrastructure was already cleaned up.
-    typeset needDeprovWait="false"
+    typeset isDeprovWaitNeeded="false"
 
     if oc -n "${namespace}" get clusterdeployment "${clusterName}" 1>/dev/null; then
         : "Patching ClusterDeployment '${clusterName}' to ensure preserveOnDelete=false"
@@ -131,7 +141,7 @@ UninstallCluster() {
             --type=merge -p '{"spec":{"preserveOnDelete":false}}'
         : "Deleting ClusterDeployment '${clusterName}' to initiate deprovisioning"
         oc -n "${namespace}" delete clusterdeployment "${clusterName}" --wait=false
-        needDeprovWait="true"
+        isDeprovWaitNeeded="true"
     else
         : "ClusterDeployment '${clusterName}' already gone; checking for existing ClusterDeprovision"
         deprovName="$(PickLatestDeprovName "${namespace}")"
@@ -139,12 +149,12 @@ UninstallCluster() {
             : "No ClusterDeprovision for '${clusterName}'; infrastructure already cleaned up"
         else
             : "Found existing ClusterDeprovision '${deprovName}'; waiting for completion"
-            needDeprovWait="true"
+            isDeprovWaitNeeded="true"
         fi
     fi
 
     # Step 3: Wait for Hive to finish deprovisioning the infrastructure.
-    if [[ "${needDeprovWait}" == "true" ]]; then
+    if [[ "${isDeprovWaitNeeded}" == "true" ]]; then
         : "Watching deprovision progress for '${clusterName}'"
 
         # Poll until Hive creates the ClusterDeprovision object.
@@ -172,10 +182,15 @@ UninstallCluster() {
         fi
 
         : "Waiting for ClusterDeprovision '${deprovName}'.status.completed=true (timeout=${ACM_CLUSTER_DEPROVISION_TIMEOUT_MINUTES}m)"
-        oc -n "${namespace}" wait \
+        if ! oc -n "${namespace}" wait \
             --for=jsonpath='{.status.completed}'=true \
             "clusterdeprovision/${deprovName}" \
-            --timeout="${ACM_CLUSTER_DEPROVISION_TIMEOUT_MINUTES}m"
+            --timeout="${ACM_CLUSTER_DEPROVISION_TIMEOUT_MINUTES}m"; then
+            : "ClusterDeprovision '${deprovName}' did not complete within timeout; capturing diagnostics"
+            oc -n "${namespace}" describe "clusterdeprovision/${deprovName}" \
+                > "${ARTIFACT_DIR}/spoke-${clusterName}-deprovision-stuck.txt" 2>&1 || true
+            false
+        fi
 
         : "Cluster '${clusterName}' deprovisioning completed"
     fi
@@ -205,21 +220,21 @@ command -v oc 1>/dev/null || { : "oc not found"; exit 1; }
 #=====================
 : "Uninstalling ${#clustersToUninstallArr[@]} spoke cluster(s) in parallel: ${clustersToUninstallArr[*]}"
 
-typeset -a pids=()
-typeset -a pidNames=()
+typeset -a pidsArr=()
+typeset -a pidNamesArr=()
 for clusterName in "${clustersToUninstallArr[@]}"; do
     clusterName="$(printf '%s' "${clusterName}" | tr -d '\n\r')"
     [[ -z "${clusterName}" ]] && continue
     UninstallCluster "${clusterName}" &
-    pids+=($!)
-    pidNames+=("${clusterName}")
+    pidsArr+=($!)
+    pidNamesArr+=("${clusterName}")
 done
 
 typeset -i failedCount=0
 typeset -i idx=0
-for pid in "${pids[@]}"; do
+for pid in "${pidsArr[@]}"; do
     if ! wait "${pid}"; then
-        : "Failed to uninstall cluster '${pidNames[${idx}]}'"
+        : "Failed to uninstall cluster '${pidNamesArr[${idx}]}'"
         (( failedCount++ )) || true
     fi
     (( idx++ )) || true
