@@ -91,6 +91,7 @@ tests:
       CNV_ENABLE_CCLM: "false"
       CNV_POLICY_CHANNEL: stable
       CNV_POLICY_INSTALL_MAJOR_MINOR: "4.20"
+      CNV_POLICY_UPGRADE_APPROVAL: Manual
       CNV_SOURCE: production
       CNV_TARGET_MAJOR_MINOR: "4.21"
       COMPUTE_NODE_TYPE: m6a.4xlarge

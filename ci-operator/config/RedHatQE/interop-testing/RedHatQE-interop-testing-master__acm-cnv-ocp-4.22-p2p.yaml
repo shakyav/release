@@ -87,6 +87,7 @@ tests:
       OPENSHIFT_UPGRADE_RELEASE_IMAGE_OVERRIDE: release:target
     env:
       ACM_CLUSTER_UPGRADE_TARGET_CHANNEL: candidate-4.22
+      ACM_SPOKE_CLUSTER_COUNT: "1"
       ACM_SPOKE_CLUSTER_INITIAL_VERSION: "4.21"
       ACM_SPOKE_CLUSTER_NAME_PREFIX: acm-spoke
       ACM_SPOKE_CP_TYPE: m6a.2xlarge
@@ -94,8 +95,10 @@ tests:
       BASE_DOMAIN: cspilp.interop.ccitredhat.com
       CLOUD_PROVIDER: ipi-aws
       CNV_CHANNEL: stable
+      CNV_ENABLE_CCLM: "false"
       CNV_POLICY_CHANNEL: stable
       CNV_POLICY_INSTALL_MAJOR_MINOR: "4.20"
+      CNV_POLICY_UPGRADE_APPROVAL: Manual
       CNV_SOURCE: production
       CNV_TARGET_MAJOR_MINOR: "4.21"
       COMPUTE_NODE_TYPE: m6a.4xlarge

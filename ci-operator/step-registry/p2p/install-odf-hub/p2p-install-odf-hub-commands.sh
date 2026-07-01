@@ -109,8 +109,9 @@ WaitCsvSucceeded() {
 }
 
 # WaitCephClusterReady — wait for CephCluster (named same as StorageCluster) to reach Ready.
-# Uses oc wait --for=create first (event-driven, replaces fixed sleep) then
-# --for=jsonpath=Ready (phase is a known value so oc wait can be used directly).
+# First waits for rook-ceph-operator to create the CephCluster CR (ODF_CEPH_INITIAL_DELAY_SECONDS
+# timeout; 60s was too short on m6a.4xlarge — operator reconcile can take 1-3 min after StorageCluster apply).
+# Then polls for CephCluster.status.phase=Ready via oc wait --for=jsonpath.
 WaitCephClusterReady() {
     oc --kubeconfig="${KUBECONFIG}" wait \
         --for=create "cephcluster/${ODF_STORAGE_CLUSTER_NAME}" \

@@ -77,8 +77,11 @@ ref:
       Max seconds to wait for ocs-operator Deployment to be created after CSV Succeeded
       (replaces a fixed sleep; used as --timeout for oc wait --for=create).
   - name: ODF_CEPH_INITIAL_DELAY_SECONDS
-    default: "60"
-    documentation: Sleep after StorageCluster create before CephCluster Ready polling.
+    default: "300"
+    documentation: |-
+      Max seconds to wait for rook-ceph-operator to create the CephCluster CR after StorageCluster is applied
+      (used as --timeout for oc wait --for=create cephcluster). The operator needs to reconcile the
+      StorageCluster and emit the CephCluster — 60s was too short on m6a.4xlarge nodes; 300s is a safe margin.
   - name: ODF_CEPH_POLL_TIMEOUT_SECONDS
     default: "1800"
     documentation: Max seconds to wait for CephCluster Ready (30 min).
