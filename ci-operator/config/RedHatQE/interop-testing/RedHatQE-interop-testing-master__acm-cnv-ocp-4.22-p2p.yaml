@@ -131,6 +131,8 @@ tests:
       FIREWATCH_FAIL_WITH_TEST_FAILURES: "true"
       OCP_VERSION: "4.22"
       ODF_DEFAULT_STORAGE_CLASS: ocs-storagecluster-ceph-rbd-virtualization
+      ODF_OPERATOR_CHANNEL: stable-4.21
+      ODF_VERSION_MAJOR_MINOR: "4.21"
       OPERATORS: |
         [
           {"name": "advanced-cluster-management", "source": "redhat-operators", "channel": "release-2.16", "install_namespace": "ocm", "target_namespaces": "ocm", "operator_group": "acm-operator-group"}
@@ -163,8 +165,8 @@ tests:
     test:
     - chain: cucushift-installer-check-cluster-health
     - ref: install-operators
-    - ref: interop-tests-deploy-odf
     - ref: acm-mch
+    - ref: interop-tests-deploy-odf
     - ref: acm-interop-p2p-cluster-install
     - ref: acm-fetch-managed-clusters
     - ref: p2p-install-odf-spokes
